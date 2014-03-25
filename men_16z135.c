@@ -713,3 +713,7 @@ static void __exit men_z135_exit(void)
 	men_chameleon_unregister_driver(&cham_driver);
 }
 module_exit(men_z135_exit);
+
+MODULE_AUTHOR("Johannes Thumshirn <johannes.thumshirn@men.de>");
+MODULE_LICENSE("GPL v2");
+MODULE_DESCRIPTION("MEN 16z135 High Speed UART");
