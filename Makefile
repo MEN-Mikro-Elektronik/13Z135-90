@@ -1,12 +1,14 @@
 ifneq ($(KERNELRELEASE),)
-	obj-m += men_16z135.o
+	obj-m := men_16z135.o
+	ccflags-y := -I/opt/menlinux/INCLUDE/NATIVE/
+	ccflags-y += -I/opt/menlinux/INCLUDE/COM/
 else
-	KERNELDIR ?= /lib/modules/$(shell uname -r)/build
-	PWD := (shell pwd)
+#	KERNELDIR ?= /lib/modules/$(shell uname -r)/build
+	KERNELDIR ?= /home/jt/src/linux-trees/linux
 
 default:
-	$(MAKE) -C $(KERNELDIR) M=$(PWD) modules
+	$(MAKE) -C $(KERNELDIR) M=$$PWD modules
 
 clean:
-	$(MAKE) -C $(KERNELDIR) M=$(PWD) clean
+	$(MAKE) -C $(KERNELDIR) M=$$PWD clean
 endif
