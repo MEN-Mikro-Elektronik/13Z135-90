@@ -63,6 +63,7 @@ struct men_z135_port {
 	struct uart_port port;
 	struct tasklet_struct intrs[NUM_IRQS];
 	struct pci_dev *pdev;
+	struct uart_driver *men_z135_driver;
 	CHAMELEON_UNIT_T *chu;
 	int msi;
 	int tx_empty;
@@ -596,15 +597,6 @@ static struct uart_ops men_z135_ops = {
 	.verify_port = men_z135_verify_port,
 };
 
-static struct uart_driver men_z135_driver = {
-	.owner = THIS_MODULE,
-	.driver_name = "men_z135_port",
-	.dev_name = "ttyHSU",
-	.major = 0,
-	.minor = 0,
-	.nr = 4,
-};
-
 /**
  * men_z135_probe() - Probe a z135 instance
  * @chu: The chameleon unit
@@ -616,6 +608,7 @@ static int men_z135_probe(CHAMELEON_UNIT_T *chu)
 {
 	struct men_z135_port *uart;
 	struct device *dev;
+	struct uart_driver *men_z135_driver;
 	int err;
 
 	dev = &chu->pdev->dev;
@@ -623,6 +616,17 @@ static int men_z135_probe(CHAMELEON_UNIT_T *chu)
 	uart = devm_kzalloc(dev, sizeof(struct men_z135_port), GFP_KERNEL);
 	if (!uart)
 		return -ENOMEM;
+
+	men_z135_driver = devm_kzalloc(dev, sizeof(struct uart_driver), GFP_KERNEL);
+	if (!men_z135_driver)
+		return -ENOMEM;
+
+	men_z135_driver->owner = THIS_MODULE;
+	men_z135_driver->driver_name = "men_z135_port";
+	men_z135_driver->dev_name = "ttyHSU";
+	men_z135_driver->major = 0;
+	men_z135_driver->minor = 0;
+	men_z135_driver->nr = 1;
 
 	chu->driver_data = uart;
 
@@ -637,6 +641,7 @@ static int men_z135_probe(CHAMELEON_UNIT_T *chu)
 
 	uart->pdev = chu->pdev;
 	uart->chu = chu;
+	uart->men_z135_driver = men_z135_driver;
 
 	spin_lock_init(&uart->port.lock);
 
@@ -645,18 +650,18 @@ static int men_z135_probe(CHAMELEON_UNIT_T *chu)
 
 	uart->mapbase = (phys_addr_t) chu->phys;
 
-	err = uart_register_driver(&men_z135_driver);
+	err = uart_register_driver(men_z135_driver);
 	if (err)
 		goto err_mem;
 
-	err = uart_add_one_port(&men_z135_driver, &uart->port);
+	err = uart_add_one_port(men_z135_driver, &uart->port);
 	if (err)
 		goto err_add;
 
 	return 0;
 
 err_add:
-	uart_unregister_driver(&men_z135_driver);
+	uart_unregister_driver(men_z135_driver);
 
 err_mem:
 	dev_err(dev, "Failed to register UART: %d\n", err);
@@ -672,16 +677,19 @@ err_mem:
 static int men_z135_remove(CHAMELEON_UNIT_T *chu)
 {
 	struct men_z135_port *uart;
+	struct uart_driver *men_z135_driver;
 
 	uart = chu->driver_data;
+	men_z135_driver = uart->men_z135_driver;
 
-	uart_unregister_driver(&men_z135_driver);
-	uart_remove_one_port(&men_z135_driver, &uart->port);
+	uart_remove_one_port(men_z135_driver, &uart->port);
+	uart_unregister_driver(men_z135_driver);
 
 	return 0;
 }
 
-static u16 mod_code_arr[] = { 135 };
+static u16 mod_code_arr[] = { 0xbd,
+			      CHAMELEON_MODCODE_END };
 
 static CHAMELEON_DRIVER_T cham_driver = {
 	.name = "men_z135-uart",
