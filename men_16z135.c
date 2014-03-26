@@ -23,14 +23,15 @@
 #define MEN_Z135_NUM_MSI_VECTORS	2
 
 #define MEN_Z135_STAT_REG		0x0
-#define MEN_Z135_RX_RAM			0x4
-#define MEN_Z135_TX_RAM			0x400
+#define MEN_Z135_RX_RAM		0x4
+#define MEN_Z135_TX_RAM		0x400
 #define MEN_Z135_RX_CTRL		0x800
 #define MEN_Z135_TX_CTRL		0x804
-#define MEN_Z135_ERR_FIFO		0x808
-#define MEN_Z135_CONF_REG		0x80c
-#define MEN_Z135_UART_FREQ		0x810
-#define MEN_Z135_BAUD_REG		0x814
+#define MEN_Z135_CONF_REG		0x808
+#define MEN_Z135_UART_FREQ		0x80c
+#define MEN_Z135_BAUD_REG		0x810
+#define MENZ135_TIMEOUT		0x814
+
 #define MEN_Z135_MEM_SIZE		0x818
 
 #define IRQ_PENDING(x) ((x) & 1)
@@ -50,6 +51,8 @@
 
 #define BYTES_TO_ALIGN(x) ((unsigned long) (x) & 0x3)
 
+static int line = 0;
+
 static int budget = 32;
 module_param(budget, int, S_IRUGO);
 
@@ -67,8 +70,6 @@ struct men_z135_port {
 	CHAMELEON_UNIT_T *chu;
 	int msi;
 	int tx_empty;
-	phys_addr_t mapbase;
-	void __iomem *membase;
 	unsigned int rxb;
 	unsigned int txb;
 	u32 stat_reg;
@@ -83,11 +84,12 @@ struct men_z135_port {
  */
 static inline void men_z135_deactivate_rx_irq(struct men_z135_port *uart)
 {
+	struct uart_port *port = &uart->port;
 	u32 conf_reg;
 
-	conf_reg = ioread32(uart->membase + MEN_Z135_CONF_REG);
+	conf_reg = ioread32(port->membase + MEN_Z135_CONF_REG);
 	conf_reg &= ~RXCIEN;
-	iowrite32(conf_reg, uart->membase + MEN_Z135_CONF_REG);
+	iowrite32(conf_reg, port->membase + MEN_Z135_CONF_REG);
 }
 
 /**
@@ -98,36 +100,55 @@ static inline void men_z135_deactivate_rx_irq(struct men_z135_port *uart)
  */
 static inline void men_z135_activate_rx_irq(struct men_z135_port *uart)
 {
+	struct uart_port *port = &uart->port;
 	u32 conf_reg;
 
-	conf_reg = ioread32(uart->membase + MEN_Z135_CONF_REG);
+	conf_reg = ioread32(port->membase + MEN_Z135_CONF_REG);
 	conf_reg |= RXCIEN;
-	iowrite32(conf_reg, uart->membase + MEN_Z135_CONF_REG);
+	iowrite32(conf_reg, port->membase + MEN_Z135_CONF_REG);
 }
 
+/**
+ * men_z135_register_clear() - Set value in register
+ * @uart: The UART port
+ * @addr: Register address
+ * @val: value to set
+ */
 static inline void men_z135_register_set(struct men_z135_port *uart,
 					 u32 addr, u32 val)
 {
+	struct uart_port *port = &uart->port;
 	u32 reg;
 
-	reg = ioread32(uart->membase + addr);
+	reg = ioread32(port->membase + addr);
 	reg |= val;
-	iowrite32(reg, uart->membase + addr);
+	iowrite32(reg, port->membase + addr);
 }
 
+/**
+ * men_z135_register_clear() - Unset value in register
+ * @uart: The UART port
+ * @addr: Register address
+ * @val: value to clear
+ */
 static inline void men_z135_register_clear(struct men_z135_port *uart,
 					   u32 addr, u32 val)
 {
+	struct uart_port *port = &uart->port;
 	u32 reg;
 
-	reg = ioread32(uart->membase + addr);
+	reg = ioread32(port->membase + addr);
 	reg &= ~val;
-	iowrite32(reg, uart->membase + addr);
+	iowrite32(reg, port->membase + addr);
 }
 
 
 /**
+ * men_z135_intr_msi_tx() - MSI IRQ handler for TX side
+ * @irq: The IRQ number
+ * @data: Pointer to UART port
  *
+ * men_z135_intr_msi_tx() just calls the TX tasklet, thats it.
  */
 static irqreturn_t men_z135_intr_msi_tx(int irq, void *data)
 {
@@ -166,9 +187,10 @@ static irqreturn_t men_z135_intr_msi_rx(int irq, void *data)
 static irqreturn_t men_z135_intr(int irq, void *data)
 {
 	struct men_z135_port *uart = (struct men_z135_port *)data;
+	struct uart_port *port = &uart->port;
 	int irq_id;
 
-	uart->stat_reg = ioread32(uart->membase + MEN_Z135_STAT_REG);
+	uart->stat_reg = ioread32(port->membase + MEN_Z135_STAT_REG);
 	if (!IRQ_PENDING(uart->stat_reg))
 		return IRQ_NONE;
 
@@ -196,9 +218,10 @@ static irqreturn_t men_z135_intr(int irq, void *data)
  */
 static u16 get_rx_fifo_content(struct men_z135_port *uart)
 {
+	struct uart_port *port = &uart->port;
 	u16 rxc;
 
-	uart->stat_reg = ioread32(uart->membase + MEN_Z135_STAT_REG);
+	uart->stat_reg = ioread32(port->membase + MEN_Z135_STAT_REG);
 
 	rxc = uart->stat_reg >> 24;
 	rxc |= uart->stat_reg & 0x300;
@@ -219,6 +242,7 @@ static u16 get_rx_fifo_content(struct men_z135_port *uart)
 static void men_z135_handle_rx(unsigned long arg)
 {
 	struct men_z135_port *uart = (struct men_z135_port *) arg;
+	struct uart_port *port = &uart->port;
 	struct tty_port *tport = &uart->port.state->port;
 	char buf[MEN_Z135_FIFO_SIZE];
 	int i;
@@ -229,7 +253,7 @@ static void men_z135_handle_rx(unsigned long arg)
 		if (size == 0 || size > MEN_Z135_FIFO_SIZE)
 			break;
 
-		memcpy_fromio(buf, uart->membase + MEN_Z135_RX_RAM, size);
+		memcpy_fromio(buf, port->membase + MEN_Z135_RX_RAM, size);
 
 		tty_insert_flip_string(tport, buf, size);
 		tty_flip_buffer_push(tport);
@@ -255,6 +279,8 @@ static void men_z135_handle_tx(unsigned long arg)
 	int n;
 	int tail;
 
+	men_z135_register_clear(uart, MEN_Z135_CONF_REG, TXCIEN);
+
 	if (uart_circ_empty(xmit) || uart_tx_stopped(port))
 		return;
 
@@ -263,8 +289,6 @@ static void men_z135_handle_tx(unsigned long arg)
 
 	if (uart_circ_chars_pending(xmit) < WAKEUP_CHARS)
 		uart_write_wakeup(port);
-
-	men_z135_register_clear(uart, MEN_Z135_CONF_REG, TXCIEN);
 
 	/* calculate bytes to copy */
 	qlen = uart_circ_chars_pending(xmit);
@@ -279,15 +303,15 @@ static void men_z135_handle_tx(unsigned long arg)
 
 	tail = xmit->tail & (UART_XMIT_SIZE - 1);
 
-	memcpy_toio(uart->membase + MEN_Z135_TX_RAM, xmit->buf + tail, n);
+	memcpy_toio(port->membase + MEN_Z135_TX_RAM, xmit->buf + tail, n);
 	xmit->tail = (tail + n) & (UART_XMIT_SIZE - 1);
 
-	men_z135_register_clear(uart, MEN_Z135_CONF_REG, TXCIEN);
+	men_z135_register_set(uart, MEN_Z135_CONF_REG, TXCIEN);
 
 	/* ACK number of bytes copied, this actually kicks off the copying
 	 * process in HW
 	 */
-	iowrite32(n & 0x3ff, uart->membase + MEN_Z135_TX_CTRL);
+	iowrite32(n & 0x3ff, port->membase + MEN_Z135_TX_CTRL);
 }
 
 /**
@@ -303,9 +327,11 @@ static int men_z135_request_msi(struct men_z135_port *uart)
 	int err = 0;
 
 	err = pci_enable_msi_block(uart->pdev, MEN_Z135_NUM_MSI_VECTORS);
-	if (err != 2)
+	if (err != 2) {
+		dev_warn(&uart->pdev->dev,
+				 "Failed to request 2 MSI vectors, falling back to legacy IRQs\n");
 		return -ENOTSUPP;
-
+	}
 	err = request_irq(chu->irq, men_z135_intr_msi_rx, IRQF_SHARED,
 			  "men_z135_intr_msi_rx", uart);
 	if (err) {
@@ -404,11 +430,10 @@ static void men_z135_set_mctrl(struct uart_port *port, unsigned int mctrl)
  */
 static unsigned int men_z135_get_mctrl(struct uart_port *port)
 {
-	struct men_z135_port *uart = to_men_z135(port);
 	unsigned int mctrl = 0;
 	u32 conf_reg;
 
-	conf_reg = ioread32(uart->membase + MEN_Z135_CONF_REG);
+	conf_reg = ioread32(port->membase + MEN_Z135_CONF_REG);
 
 	if (conf_reg & RTS)
 		mctrl |= TIOCM_RTS;
@@ -463,7 +488,7 @@ static void men_z135_flush_buffer(struct uart_port *port)
 {
 	struct men_z135_port *uart = to_men_z135(port);
 
-	iowrite32(0, uart->membase + MEN_Z135_TX_CTRL);
+	men_z135_register_set(uart, MEN_Z135_TX_CTRL, 0);
 }
 
 /**
@@ -535,41 +560,37 @@ static const char *men_z135_type(struct uart_port *port)
 
 static void men_z135_release_port(struct uart_port *port)
 {
-	struct men_z135_port *uart = to_men_z135(port);
+	iounmap(port->membase);
+	port->membase = 0;
 
-	if (port->flags & UPF_IOREMAP) {
-		iounmap(port->membase);
-		port->membase = 0;
-	}
-
-	release_mem_region(uart->mapbase, MEN_Z135_MEM_SIZE);
+	release_mem_region(port->mapbase, MEN_Z135_MEM_SIZE);
 }
 
 static int men_z135_request_port(struct uart_port *port)
 {
-	struct men_z135_port *uart = to_men_z135(port);
+	int size = MEN_Z135_MEM_SIZE;
 
-	if (!request_mem_region(uart->mapbase, MEN_Z135_MEM_SIZE,
-					"men_z135_port"))
+	if (!request_mem_region(port->mapbase, size, "men_z135_port"))
 		return -EBUSY;
 
-	if (port->flags & UPF_IOREMAP) {
-		uart->membase = ioremap(uart->mapbase, MEN_Z135_MEM_SIZE);
-		if (uart->membase == NULL) {
-			release_mem_region(uart->mapbase, MEN_Z135_MEM_SIZE);
-			return -ENOMEM;
-		}
+	port->membase = ioremap(port->mapbase, MEN_Z135_MEM_SIZE);
+	if (port->membase == NULL) {
+		release_mem_region(port->mapbase, MEN_Z135_MEM_SIZE);
+		return -ENOMEM;
 	}
+
+	pr_err("%s() ioremapped 0x%lx to 0x%lx\n",
+		   __func__, (unsigned long) port->mapbase,
+		   (unsigned long) port->membase);
 
 	return 0;
 }
 
 static void men_z135_config_port(struct uart_port *port, int type)
 {
-	if (port->type & UART_CONFIG_TYPE) {
-		port->type = 0;	/* XXX: Use correct port type */
-		men_z135_request_port(port);
-	}
+
+	port->type = 29;	/* XXX: Use correct port type */
+	men_z135_request_port(port);
 }
 
 static int men_z135_verify_port(struct uart_port *port,
@@ -609,6 +630,7 @@ static int men_z135_probe(CHAMELEON_UNIT_T *chu)
 	struct men_z135_port *uart;
 	struct device *dev;
 	struct uart_driver *men_z135_driver;
+	char dname[20];
 	int err;
 
 	dev = &chu->pdev->dev;
@@ -617,12 +639,15 @@ static int men_z135_probe(CHAMELEON_UNIT_T *chu)
 	if (!uart)
 		return -ENOMEM;
 
-	men_z135_driver = devm_kzalloc(dev, sizeof(struct uart_driver), GFP_KERNEL);
+	men_z135_driver = devm_kzalloc(dev, sizeof(struct uart_driver),
+				       GFP_KERNEL);
 	if (!men_z135_driver)
 		return -ENOMEM;
 
+	snprintf(dname, sizeof(dname), "men_z135_port%d", line);
+
 	men_z135_driver->owner = THIS_MODULE;
-	men_z135_driver->driver_name = "men_z135_port";
+	men_z135_driver->driver_name = dname;
 	men_z135_driver->dev_name = "ttyHSU";
 	men_z135_driver->major = 0;
 	men_z135_driver->minor = 0;
@@ -631,24 +656,25 @@ static int men_z135_probe(CHAMELEON_UNIT_T *chu)
 	chu->driver_data = uart;
 
 	uart->port.uartclk = MEN_Z135_BASECLK * 16;
-	uart->port.fifosize = MEN_Z135_FIFO_SIZE; /* TODO: Make a module parameter */
+	uart->port.fifosize = MEN_Z135_FIFO_SIZE;
 	uart->port.iotype = UPIO_MEM;
 	uart->port.ops = &men_z135_ops;
 	uart->port.irq = chu->irq;
 	uart->port.flags = UPF_BOOT_AUTOCONF | UPF_IOREMAP;
-	uart->port.line = 0;
+	uart->port.line = line++;
 	uart->port.dev = dev;
-
 	uart->pdev = chu->pdev;
 	uart->chu = chu;
 	uart->men_z135_driver = men_z135_driver;
+	uart->port.mapbase = (phys_addr_t) chu->phys;
+	uart->port.membase = NULL;
 
 	spin_lock_init(&uart->port.lock);
 
-	tasklet_init(&uart->intrs[IRQ_RX], men_z135_handle_rx, (unsigned long)uart);
-	tasklet_init(&uart->intrs[IRQ_TX], men_z135_handle_tx, (unsigned long)uart);
-
-	uart->mapbase = (phys_addr_t) chu->phys;
+	tasklet_init(&uart->intrs[IRQ_RX], men_z135_handle_rx,
+		     (unsigned long)uart);
+	tasklet_init(&uart->intrs[IRQ_TX], men_z135_handle_tx,
+		     (unsigned long)uart);
 
 	err = uart_register_driver(men_z135_driver);
 	if (err)
