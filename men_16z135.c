@@ -77,38 +77,6 @@ struct men_z135_port {
 #define to_men_z135(port) container_of(port, struct men_z135_port, port)
 
 /**
- * men_z135_deactivate_rx_irq() - Deactivate RX IRQ
- * @uart: The UART port
- *
- * Small helper function to de-active the UART's RX IRQ.
- */
-static inline void men_z135_deactivate_rx_irq(struct men_z135_port *uart)
-{
-	struct uart_port *port = &uart->port;
-	u32 conf_reg;
-
-	conf_reg = ioread32(port->membase + MEN_Z135_CONF_REG);
-	conf_reg &= ~RXCIEN;
-	iowrite32(conf_reg, port->membase + MEN_Z135_CONF_REG);
-}
-
-/**
- * men_z135_activate_rx_irq() - Activate RX IRQ
- * @uart: The UART port
- *
- * Small helper function to active the UART's RX IRQ.
- */
-static inline void men_z135_activate_rx_irq(struct men_z135_port *uart)
-{
-	struct uart_port *port = &uart->port;
-	u32 conf_reg;
-
-	conf_reg = ioread32(port->membase + MEN_Z135_CONF_REG);
-	conf_reg |= RXCIEN;
-	iowrite32(conf_reg, port->membase + MEN_Z135_CONF_REG);
-}
-
-/**
  * men_z135_reg_set() - Set value in register
  * @uart: The UART port
  * @addr: Register address
@@ -153,6 +121,7 @@ static irqreturn_t men_z135_intr_msi_tx(int irq, void *data)
 {
 	struct men_z135_port *uart = (struct men_z135_port *)data;
 
+	men_z135_reg_clr(uart, MEN_Z135_CONF_REG, TXCIEN);
 	tasklet_schedule(&uart->intrs[IRQ_TX]);
 
 	return IRQ_HANDLED;
@@ -170,7 +139,7 @@ static irqreturn_t men_z135_intr_msi_rx(int irq, void *data)
 {
 	struct men_z135_port *uart = (struct men_z135_port *)data;
 
-	men_z135_deactivate_rx_irq(uart);
+	men_z135_reg_clr(uart, MEN_Z135_CONF_REG, RXCIEN);
 	tasklet_schedule(&uart->intrs[IRQ_RX]);
 
 	return IRQ_HANDLED;
@@ -190,16 +159,19 @@ static irqreturn_t men_z135_intr(int irq, void *data)
 	int irq_id;
 
 	uart->stat_reg = ioread32(port->membase + MEN_Z135_STAT_REG);
-	if (!IRQ_PENDING(uart->stat_reg))
+
+	/* IRQ pending is low active */
+	if (IRQ_PENDING(uart->stat_reg))
 		return IRQ_NONE;
 
 	irq_id = IRQ_ID(uart->stat_reg);
 
-	if (irq_id == 0 || irq_id == 1)
+	if (irq_id == 0 || irq_id == 1) {
+		men_z135_reg_clr(uart, MEN_Z135_CONF_REG, TXCIEN);
 		tasklet_schedule(&uart->intrs[IRQ_TX]);
 
-	else if (irq_id == 2 || irq_id == 3 || irq_id == 6) {
-		men_z135_deactivate_rx_irq(uart);
+	} else if (irq_id == 2 || irq_id == 3 || irq_id == 6) {
+		men_z135_reg_clr(uart, MEN_Z135_CONF_REG, RXCIEN);
 		tasklet_schedule(&uart->intrs[IRQ_RX]);
 	} else {
 		dev_warn(&uart->pdev->dev, "Unknown IRQ id %d\n", irq_id);
@@ -259,8 +231,7 @@ static void men_z135_handle_rx(unsigned long arg)
 
 		uart->rxb += size;
 	}
-
-	men_z135_activate_rx_irq(uart);
+	men_z135_reg_set(uart, MEN_Z135_CONF_REG, RXCIEN);
 }
 
 /**
@@ -278,8 +249,6 @@ static void men_z135_handle_tx(unsigned long arg)
 	int n;
 	int tail;
 
-	men_z135_reg_clr(uart, MEN_Z135_CONF_REG, TXCIEN);
-
 	if (uart_circ_empty(xmit) || uart_tx_stopped(port))
 		return;
 
@@ -296,7 +265,7 @@ static void men_z135_handle_tx(unsigned long arg)
 	 * rest
 	 */
 	if (BYTES_TO_ALIGN(qlen))
-		n = 1;
+		n = BYTES_TO_ALIGN(qlen);
 	else
 		n = min(MEN_Z135_FIFO_SIZE, qlen);
 
@@ -500,7 +469,7 @@ static void men_z135_stop_rx(struct uart_port *port)
 {
 	struct men_z135_port *uart = to_men_z135(port);
 
-	men_z135_deactivate_rx_irq(uart);
+	men_z135_reg_clr(uart, MEN_Z135_CONF_REG, RXCIEN);
 }
 
 /**
@@ -577,10 +546,6 @@ static int men_z135_request_port(struct uart_port *port)
 		release_mem_region(port->mapbase, MEN_Z135_MEM_SIZE);
 		return -ENOMEM;
 	}
-
-	pr_err("%s() ioremapped 0x%lx to 0x%lx\n",
-		   __func__, (unsigned long) port->mapbase,
-		   (unsigned long) port->membase);
 
 	return 0;
 }
