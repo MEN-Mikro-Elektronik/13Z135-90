@@ -49,6 +49,27 @@
 #define LOOP BIT(28)
 #define RCFC BIT(29)
 
+#define MEN_Z135_LCR_SHIFT 8	/* LCR shift mask */
+
+#define MEN_Z135_WL5 0		/* CS5 */
+#define MEN_Z135_WL6 1		/* CS6 */
+#define MEN_Z135_WL7 2		/* CS7 */
+#define MEN_Z135_WL8 3		/* CS8 */
+
+#define MEN_Z135_STB_SHIFT 2	/* Stopbits */
+#define MEN_Z135_NSTB1 0
+#define MEN_Z135_NSTB2 1
+
+#define MEN_Z135_PEN_SHIFT 3	/* Parity enable */
+#define MEN_Z135_PAR_DIS 0
+#define MEN_Z135_PAR_ENA 1
+
+#define MEN_Z135_PTY_SHIFT 4	/* Parity type */
+#define MEN_Z135_PTY_ODD 0
+#define MEN_Z135_PTY_EVN 1
+
+#define LCR(x) (((x) >> MEN_Z135_LCR_SHIFT) & 0xff)
+
 #define BYTES_TO_ALIGN(x) ((unsigned long) (x) & 0x3)
 
 static int line = 0;
@@ -519,6 +540,58 @@ static void men_z135_set_termios(struct uart_port *port,
 				 struct ktermios *termios,
 				 struct ktermios *old)
 {
+	unsigned int baud;
+	unsigned int quot;
+	u32 conf_reg;
+	u32 bd_reg;
+	u32 uart_freq;
+	u8 lcr;
+
+	conf_reg = ioread32(port->membase + MEN_Z135_CONF_REG);
+	lcr = LCR(conf_reg);
+
+	baud = uart_get_baud_rate(port, termios, old, 0, port->uartclk / 16);
+	quot = uart_get_divisor(port, baud);
+
+	/* byte size */
+	switch (termios->c_cflag & CSIZE) {
+	case CS5:
+		lcr |= MEN_Z135_WL5;
+		break;
+	case CS6:
+		lcr |= MEN_Z135_WL6;
+		break;
+	case CS7:
+		lcr |= MEN_Z135_WL7;
+		break;
+	case CS8:
+		lcr |= MEN_Z135_WL8;
+		break;
+	}
+
+	/* stop bits */
+	if (termios->c_cflag & CSTOPB)
+		lcr |= MEN_Z135_NSTB2 << MEN_Z135_STB_SHIFT;
+
+	/* parity */
+	if (termios->c_cflag & PARENB) {
+		lcr |= MEN_Z135_PAR_ENA << MEN_Z135_PEN_SHIFT;
+
+		if (termios->c_cflag & PARODD)
+			lcr |= MEN_Z135_PTY_ODD << MEN_Z135_PTY_SHIFT;
+		else
+			lcr |= MEN_Z135_PTY_EVN << MEN_Z135_PTY_SHIFT;
+	} else
+		lcr |= MEN_Z135_PAR_DIS << MEN_Z135_PEN_SHIFT;
+
+	iowrite32(conf_reg, port->membase + MEN_Z135_CONF_REG);
+
+	uart_freq = ioread32(port->membase + MEN_Z135_UART_FREQ);
+
+	bd_reg = uart_freq / (4 * baud);
+	pr_err("%s(): uart_freq = %d, baud = %d, bd_reg = %d\n",
+		__func__, uart_freq, baud, bd_reg);
+	iowrite32(bd_reg, port->membase + MEN_Z135_BAUD_REG);
 }
 
 static const char *men_z135_type(struct uart_port *port)
