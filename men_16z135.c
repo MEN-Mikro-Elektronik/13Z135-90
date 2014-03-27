@@ -109,13 +109,13 @@ static inline void men_z135_activate_rx_irq(struct men_z135_port *uart)
 }
 
 /**
- * men_z135_register_clear() - Set value in register
+ * men_z135_reg_set() - Set value in register
  * @uart: The UART port
  * @addr: Register address
  * @val: value to set
  */
-static inline void men_z135_register_set(struct men_z135_port *uart,
-					 u32 addr, u32 val)
+static inline void men_z135_reg_set(struct men_z135_port *uart,
+				    u32 addr, u32 val)
 {
 	struct uart_port *port = &uart->port;
 	u32 reg;
@@ -126,13 +126,13 @@ static inline void men_z135_register_set(struct men_z135_port *uart,
 }
 
 /**
- * men_z135_register_clear() - Unset value in register
+ * men_z135_reg_clr() - Unset value in register
  * @uart: The UART port
  * @addr: Register address
  * @val: value to clear
  */
-static inline void men_z135_register_clear(struct men_z135_port *uart,
-					   u32 addr, u32 val)
+static inline void men_z135_reg_clr(struct men_z135_port *uart,
+				    u32 addr, u32 val)
 {
 	struct uart_port *port = &uart->port;
 	u32 reg;
@@ -141,7 +141,6 @@ static inline void men_z135_register_clear(struct men_z135_port *uart,
 	reg &= ~val;
 	iowrite32(reg, port->membase + addr);
 }
-
 
 /**
  * men_z135_intr_msi_tx() - MSI IRQ handler for TX side
@@ -279,7 +278,7 @@ static void men_z135_handle_tx(unsigned long arg)
 	int n;
 	int tail;
 
-	men_z135_register_clear(uart, MEN_Z135_CONF_REG, TXCIEN);
+	men_z135_reg_clr(uart, MEN_Z135_CONF_REG, TXCIEN);
 
 	if (uart_circ_empty(xmit) || uart_tx_stopped(port))
 		return;
@@ -306,7 +305,7 @@ static void men_z135_handle_tx(unsigned long arg)
 	memcpy_toio(port->membase + MEN_Z135_TX_RAM, xmit->buf + tail, n);
 	xmit->tail = (tail + n) & (UART_XMIT_SIZE - 1);
 
-	men_z135_register_set(uart, MEN_Z135_CONF_REG, TXCIEN);
+	men_z135_reg_set(uart, MEN_Z135_CONF_REG, TXCIEN);
 
 	/* ACK number of bytes copied, this actually kicks off the copying
 	 * process in HW
@@ -419,7 +418,7 @@ static void men_z135_set_mctrl(struct uart_port *port, unsigned int mctrl)
 	if (mctrl & TIOCM_LOOP)
 		conf_reg |= LOOP;
 
-	men_z135_register_set(uart, MEN_Z135_CONF_REG, conf_reg);
+	men_z135_reg_set(uart, MEN_Z135_CONF_REG, conf_reg);
 }
 
 /**
@@ -461,7 +460,7 @@ static void men_z135_stop_tx(struct uart_port *port)
 {
 	struct men_z135_port *uart = to_men_z135(port);
 
-	men_z135_register_clear(uart, MEN_Z135_CONF_REG, TXCIEN);
+	men_z135_reg_clr(uart, MEN_Z135_CONF_REG, TXCIEN);
 }
 
 /**
@@ -488,7 +487,7 @@ static void men_z135_flush_buffer(struct uart_port *port)
 {
 	struct men_z135_port *uart = to_men_z135(port);
 
-	men_z135_register_set(uart, MEN_Z135_TX_CTRL, 0);
+	men_z135_reg_set(uart, MEN_Z135_TX_CTRL, 0);
 }
 
 /**
@@ -514,7 +513,7 @@ static void men_z135_enable_ms(struct uart_port *port)
 {
 	struct men_z135_port *uart = to_men_z135(port);
 
-	men_z135_register_set(uart, MEN_Z135_CONF_REG, MSIEN);
+	men_z135_reg_set(uart, MEN_Z135_CONF_REG, MSIEN);
 }
 
 static int men_z135_startup(struct uart_port *port)
@@ -528,7 +527,7 @@ static int men_z135_startup(struct uart_port *port)
 		return -ENODEV;
 
 	conf_reg |= (RXCIEN | RLSIEN | MSIEN);
-	men_z135_register_set(uart, MEN_Z135_CONF_REG, conf_reg);
+	men_z135_reg_set(uart, MEN_Z135_CONF_REG, conf_reg);
 
 	return 0;
 }
@@ -539,7 +538,7 @@ static void men_z135_shutdown(struct uart_port *port)
 	u32 conf_reg = 0;
 
 	conf_reg |= (RXCIEN | RLSIEN | MSIEN);
-	men_z135_register_clear(uart, MEN_Z135_CONF_REG, conf_reg);
+	men_z135_reg_clr(uart, MEN_Z135_CONF_REG, conf_reg);
 
 	free_irq(uart->port.irq, uart);
 	if (uart->msi) {
