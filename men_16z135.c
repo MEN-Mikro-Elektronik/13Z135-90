@@ -21,6 +21,7 @@
 #define MEN_Z135_BASECLK		3250000
 #define MEN_Z135_FIFO_SIZE		1024
 #define MEN_Z135_NUM_MSI_VECTORS	2
+#define MEN_Z135_TX_WATERMARK 1020
 
 #define MEN_Z135_STAT_REG		0x0
 #define MEN_Z135_RX_RAM		0x4
@@ -70,7 +71,7 @@
 
 #define LCR(x) (((x) >> MEN_Z135_LCR_SHIFT) & 0xff)
 
-#define BYTES_TO_ALIGN(x) ((unsigned long) (x) & 0x3)
+#define BYTES_TO_ALIGN(x) ((x) & 0x3)
 
 static int line = 0;
 
@@ -104,7 +105,7 @@ struct men_z135_port {
  * @val: value to set
  */
 static inline void men_z135_reg_set(struct men_z135_port *uart,
-				    u32 addr, u32 val)
+				u32 addr, u32 val)
 {
 	struct uart_port *port = &uart->port;
 	u32 reg;
@@ -121,7 +122,7 @@ static inline void men_z135_reg_set(struct men_z135_port *uart,
  * @val: value to clear
  */
 static inline void men_z135_reg_clr(struct men_z135_port *uart,
-				    u32 addr, u32 val)
+				u32 addr, u32 val)
 {
 	struct uart_port *port = &uart->port;
 	u32 reg;
@@ -180,7 +181,6 @@ static irqreturn_t men_z135_intr(int irq, void *data)
 	int irq_id;
 
 	uart->stat_reg = ioread32(port->membase + MEN_Z135_STAT_REG);
-
 	/* IRQ pending is low active */
 	if (IRQ_PENDING(uart->stat_reg))
 		return IRQ_NONE;
@@ -190,7 +190,6 @@ static irqreturn_t men_z135_intr(int irq, void *data)
 	if (irq_id == 0 || irq_id == 1) {
 		men_z135_reg_clr(uart, MEN_Z135_CONF_REG, TXCIEN);
 		tasklet_schedule(&uart->intrs[IRQ_TX]);
-
 	} else if (irq_id == 2 || irq_id == 3 || irq_id == 6) {
 		men_z135_reg_clr(uart, MEN_Z135_CONF_REG, RXCIEN);
 		tasklet_schedule(&uart->intrs[IRQ_RX]);
@@ -211,12 +210,18 @@ static irqreturn_t men_z135_intr(int irq, void *data)
 static u16 get_rx_fifo_content(struct men_z135_port *uart)
 {
 	struct uart_port *port = &uart->port;
+	u32 stat_reg;
 	u16 rxc;
+	u8 rxc_lo;
+	u8 rxc_hi;
 
-	uart->stat_reg = ioread32(port->membase + MEN_Z135_STAT_REG);
 
-	rxc = uart->stat_reg >> 24;
-	rxc |= uart->stat_reg & 0x300;
+	stat_reg = ioread32(port->membase + MEN_Z135_STAT_REG);
+
+	rxc_lo = stat_reg >> 24;
+	rxc_hi = (stat_reg & 0xC0) >> 6;
+
+	rxc = rxc_lo | (rxc_hi << 8);
 
 	return rxc;
 }
@@ -236,71 +241,104 @@ static void men_z135_handle_rx(unsigned long arg)
 	struct men_z135_port *uart = (struct men_z135_port *) arg;
 	struct uart_port *port = &uart->port;
 	struct tty_port *tport = &uart->port.state->port;
+	unsigned long flags;
 	char buf[MEN_Z135_FIFO_SIZE];
 	int i;
 	u16 size;
+	int copied;
+
+	spin_lock_irqsave(&port->lock, flags);
 
 	for (i = 0; i < budget; i++) {
 		size = get_rx_fifo_content(uart);
-		if (size == 0 || size > MEN_Z135_FIFO_SIZE)
+		if (size == 0)
 			break;
 
-		memcpy_fromio(buf, port->membase + MEN_Z135_RX_RAM, size);
+		if (size > MEN_Z135_FIFO_SIZE)
+			size = MEN_Z135_FIFO_SIZE;
 
-		tty_insert_flip_string(tport, buf, size);
+		memcpy_fromio(buf, port->membase + MEN_Z135_RX_RAM, size);
+		iowrite32(size, port->membase + 0x800);
+
+		copied = tty_insert_flip_string(tport, buf, size);
+
+		spin_unlock_irqrestore(&port->lock, flags);
 		tty_flip_buffer_push(tport);
+		spin_lock_irqsave(&port->lock, flags);
 
 		uart->rxb += size;
 	}
 	men_z135_reg_set(uart, MEN_Z135_CONF_REG, RXCIEN);
+
+	spin_unlock_irqrestore(&port->lock, flags);
 }
 
 /**
  * men_z135_handle_tx() - TX tasklet routine
  * @arg: Pointer to struct men_z135_port
  *
- * TODO: Acknowledge copied bits
  */
 static void men_z135_handle_tx(unsigned long arg)
 {
 	struct men_z135_port *uart = (struct men_z135_port *) arg;
 	struct uart_port *port = &uart->port;
 	struct circ_buf *xmit = &port->state->xmit;
+	u32 txc;
+	u32 wptr;
+	unsigned long flags;
 	int qlen;
 	int n;
-	int tail;
+	int txfree;
 
-	if (uart_circ_empty(xmit) || uart_tx_stopped(port))
-		return;
+	spin_lock_irqsave(&port->lock, flags);
+
+	if (uart_circ_empty(xmit))
+		goto out;
+
+	if (uart_tx_stopped(port))
+		goto out;
+
 
 	if (port->x_char)
-		return;
+		goto out;
 
 	if (uart_circ_chars_pending(xmit) < WAKEUP_CHARS)
 		uart_write_wakeup(port);
 
 	/* calculate bytes to copy */
 	qlen = uart_circ_chars_pending(xmit);
+	if (qlen <= 0)
+		goto out;
+
+	if (xmit->tail < 0)
+		goto out;
+
+	wptr = ioread32(port->membase + MEN_Z135_TX_CTRL);
+	txc = (wptr >> 16) & 0x3ff;
+	wptr &= 0x3ff;
+
+	txfree = MEN_Z135_TX_WATERMARK - txc;
 
 	/* if we're not aligned, it's better to copy only 1 byte and then the
 	 * rest
 	 */
-	if (BYTES_TO_ALIGN(qlen))
-		n = BYTES_TO_ALIGN(qlen);
-	else
-		n = min(MEN_Z135_FIFO_SIZE, qlen);
+	if (qlen >= 3 && BYTES_TO_ALIGN(wptr)) {
+		n = 4 - BYTES_TO_ALIGN(wptr);
+	} else if (qlen > txfree) {
+		n = txfree;
+	} else
+		n = qlen;
 
-	tail = xmit->tail & (UART_XMIT_SIZE - 1);
+	memcpy_toio(port->membase + MEN_Z135_TX_RAM, &xmit->buf[xmit->tail], n);
+	xmit->tail = (xmit->tail + n) & (UART_XMIT_SIZE - 1);
 
-	memcpy_toio(port->membase + MEN_Z135_TX_RAM, xmit->buf + tail, n);
-	xmit->tail = (tail + n) & (UART_XMIT_SIZE - 1);
-
-	men_z135_reg_set(uart, MEN_Z135_CONF_REG, TXCIEN);
-
-	/* ACK number of bytes copied, this actually kicks off the copying
-	 * process in HW
-	 */
 	iowrite32(n & 0x3ff, port->membase + MEN_Z135_TX_CTRL);
+
+	if (!uart_circ_empty(xmit))
+		men_z135_reg_set(uart, MEN_Z135_CONF_REG, TXCIEN);
+
+out:
+	spin_unlock_irqrestore(&port->lock, flags);
 }
 
 /**
@@ -318,18 +356,18 @@ static int men_z135_request_msi(struct men_z135_port *uart)
 	err = pci_enable_msi_block(uart->pdev, MEN_Z135_NUM_MSI_VECTORS);
 	if (err != 2) {
 		dev_warn(&uart->pdev->dev,
-				 "Failed to request 2 MSI vectors, falling back to legacy IRQs\n");
+			"Failed to request 2 MSI vectors, falling back to legacy IRQs\n");
 		return -ENOTSUPP;
 	}
 	err = request_irq(chu->irq, men_z135_intr_msi_rx, IRQF_SHARED,
-			  "men_z135_intr_msi_rx", uart);
+			"men_z135_intr_msi_rx", uart);
 	if (err) {
 		pci_disable_msi(uart->pdev);
 		return -ENOTSUPP;
 	}
 
 	err = request_irq(chu->irq + 1, men_z135_intr_msi_tx, IRQF_SHARED,
-			  "men_z135_intr_msi_tx", uart);
+			"men_z135_intr_msi_tx", uart);
 	if (err) {
 		pci_disable_msi(uart->pdev);
 		free_irq(chu->irq, (void *)uart);
@@ -359,7 +397,7 @@ static int men_z135_request_irq(struct men_z135_port *uart)
 		goto request_done;
 
 	err = request_irq(chu->irq, men_z135_intr, IRQF_SHARED,
-			  "men_z135_intr", uart);
+			"men_z135_intr", uart);
 	if (err)
 		dev_err(dev, "Error %d getting interrupt\n", err);
 
@@ -376,9 +414,13 @@ request_done:
  */
 static unsigned int men_z135_tx_empty(struct uart_port *port)
 {
-	struct men_z135_port *uart = to_men_z135(port);
+	u32 stat_reg;
+	u8 lsr;
 
-	if (uart->tx_empty)
+	stat_reg = ioread32(port->membase + MEN_Z135_STAT_REG);
+
+	lsr = (stat_reg >> 16) & 0xff;
+	if (lsr & BIT(5) && lsr & BIT(6))
 		return TIOCSER_TEMT;
 	else
 		return 0;
@@ -475,9 +517,6 @@ static void men_z135_start_tx(struct uart_port *port)
  */
 static void men_z135_flush_buffer(struct uart_port *port)
 {
-	struct men_z135_port *uart = to_men_z135(port);
-
-	men_z135_reg_set(uart, MEN_Z135_TX_CTRL, 0);
 }
 
 /**
@@ -516,7 +555,7 @@ static int men_z135_startup(struct uart_port *port)
 	if (err)
 		return -ENODEV;
 
-	conf_reg |= (RXCIEN | RLSIEN | MSIEN);
+	conf_reg |= (RXCIEN | RLSIEN | MSIEN) | (3 << 20);
 	men_z135_reg_set(uart, MEN_Z135_CONF_REG, conf_reg);
 
 	return 0;
@@ -537,11 +576,10 @@ static void men_z135_shutdown(struct uart_port *port)
 }
 
 static void men_z135_set_termios(struct uart_port *port,
-				 struct ktermios *termios,
-				 struct ktermios *old)
+				struct ktermios *termios,
+				struct ktermios *old)
 {
 	unsigned int baud;
-	unsigned int quot;
 	u32 conf_reg;
 	u32 bd_reg;
 	u32 uart_freq;
@@ -549,9 +587,6 @@ static void men_z135_set_termios(struct uart_port *port,
 
 	conf_reg = ioread32(port->membase + MEN_Z135_CONF_REG);
 	lcr = LCR(conf_reg);
-
-	baud = uart_get_baud_rate(port, termios, old, 0, port->uartclk / 16);
-	quot = uart_get_divisor(port, baud);
 
 	/* byte size */
 	switch (termios->c_cflag & CSIZE) {
@@ -584,14 +619,20 @@ static void men_z135_set_termios(struct uart_port *port,
 	} else
 		lcr |= MEN_Z135_PAR_DIS << MEN_Z135_PEN_SHIFT;
 
+	conf_reg |= lcr << MEN_Z135_LCR_SHIFT;
 	iowrite32(conf_reg, port->membase + MEN_Z135_CONF_REG);
 
 	uart_freq = ioread32(port->membase + MEN_Z135_UART_FREQ);
 
+	baud = uart_get_baud_rate(port, termios, old, 0, uart_freq / 16);
+
+	if (tty_termios_baud_rate(termios))
+		tty_termios_encode_baud_rate(termios, baud, baud);
+
 	bd_reg = uart_freq / (4 * baud);
-	pr_err("%s(): uart_freq = %d, baud = %d, bd_reg = %d\n",
-		__func__, uart_freq, baud, bd_reg);
 	iowrite32(bd_reg, port->membase + MEN_Z135_BAUD_REG);
+
+	uart_update_timeout(port, termios->c_cflag, baud);
 }
 
 static const char *men_z135_type(struct uart_port *port)
@@ -625,7 +666,6 @@ static int men_z135_request_port(struct uart_port *port)
 
 static void men_z135_config_port(struct uart_port *port, int type)
 {
-
 	port->type = 29;	/* XXX: Use correct port type */
 	men_z135_request_port(port);
 }
@@ -677,7 +717,7 @@ static int men_z135_probe(CHAMELEON_UNIT_T *chu)
 		return -ENOMEM;
 
 	men_z135_driver = devm_kzalloc(dev, sizeof(struct uart_driver),
-				       GFP_KERNEL);
+				GFP_KERNEL);
 	if (!men_z135_driver)
 		return -ENOMEM;
 
@@ -700,35 +740,40 @@ static int men_z135_probe(CHAMELEON_UNIT_T *chu)
 	uart->port.flags = UPF_BOOT_AUTOCONF | UPF_IOREMAP;
 	uart->port.line = line++;
 	uart->port.dev = dev;
+	uart->port.timeout = (HZ/50)*2;
 	uart->pdev = chu->pdev;
 	uart->chu = chu;
 	uart->men_z135_driver = men_z135_driver;
 	uart->port.mapbase = (phys_addr_t) chu->phys;
 	uart->port.membase = NULL;
 
+	pr_err("%s() port->mapbase = 0x%lx, dname = '%s'\n",
+		__func__, (unsigned long) uart->port.mapbase, dname);
+
 	spin_lock_init(&uart->port.lock);
 
 	tasklet_init(&uart->intrs[IRQ_RX], men_z135_handle_rx,
-		     (unsigned long)uart);
+		(unsigned long)uart);
 	tasklet_init(&uart->intrs[IRQ_TX], men_z135_handle_tx,
-		     (unsigned long)uart);
+		(unsigned long)uart);
 
 	err = uart_register_driver(men_z135_driver);
-	if (err)
+	if (err) {
+		dev_err(dev, "Failed to register UART: %d\n", err);
 		goto err_mem;
+	}
 
 	err = uart_add_one_port(men_z135_driver, &uart->port);
-	if (err)
+	if (err) {
+		dev_err(dev, "Failed to add UART: %d\n", err);
 		goto err_add;
-
+	}
 	return 0;
 
 err_add:
 	uart_unregister_driver(men_z135_driver);
 
 err_mem:
-	dev_err(dev, "Failed to register UART: %d\n", err);
-
 	return err;
 }
 
