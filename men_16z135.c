@@ -18,20 +18,21 @@
 
 #include <MEN/men_chameleon.h>
 
+#define MEN_Z135_MAX_PORTS		12
 #define MEN_Z135_BASECLK		3250000
 #define MEN_Z135_FIFO_SIZE		1024
 #define MEN_Z135_NUM_MSI_VECTORS	2
-#define MEN_Z135_TX_WATERMARK 1020
+#define MEN_Z135_TX_WATERMARK		1020
 
 #define MEN_Z135_STAT_REG		0x0
-#define MEN_Z135_RX_RAM		0x4
-#define MEN_Z135_TX_RAM		0x400
+#define MEN_Z135_RX_RAM			0x4
+#define MEN_Z135_TX_RAM			0x400
 #define MEN_Z135_RX_CTRL		0x800
 #define MEN_Z135_TX_CTRL		0x804
 #define MEN_Z135_CONF_REG		0x808
 #define MEN_Z135_UART_FREQ		0x80c
 #define MEN_Z135_BAUD_REG		0x810
-#define MENZ135_TIMEOUT		0x814
+#define MENZ135_TIMEOUT			0x814
 
 #define MEN_Z135_MEM_SIZE		0x818
 
@@ -90,10 +91,8 @@ struct men_z135_port {
 	struct pci_dev *pdev;
 	struct uart_driver *men_z135_driver;
 	CHAMELEON_UNIT_T *chu;
+	char *rxbuf;
 	int msi;
-	int tx_empty;
-	unsigned int rxb;
-	unsigned int txb;
 	u32 stat_reg;
 };
 #define to_men_z135(port) container_of(port, struct men_z135_port, port)
@@ -242,7 +241,6 @@ static void men_z135_handle_rx(unsigned long arg)
 	struct uart_port *port = &uart->port;
 	struct tty_port *tport = &uart->port.state->port;
 	unsigned long flags;
-	char buf[MEN_Z135_FIFO_SIZE];
 	int i;
 	u16 size;
 	int copied;
@@ -257,16 +255,14 @@ static void men_z135_handle_rx(unsigned long arg)
 		if (size > MEN_Z135_FIFO_SIZE)
 			size = MEN_Z135_FIFO_SIZE;
 
-		memcpy_fromio(buf, port->membase + MEN_Z135_RX_RAM, size);
+		memcpy_fromio(uart->rxbuf, port->membase + MEN_Z135_RX_RAM, size);
 		iowrite32(size, port->membase + 0x800);
 
-		copied = tty_insert_flip_string(tport, buf, size);
+		copied = tty_insert_flip_string(tport, uart->rxbuf, size);
 
 		spin_unlock_irqrestore(&port->lock, flags);
 		tty_flip_buffer_push(tport);
 		spin_lock_irqsave(&port->lock, flags);
-
-		uart->rxb += size;
 	}
 	men_z135_reg_set(uart, MEN_Z135_CONF_REG, RXCIEN);
 
@@ -695,6 +691,15 @@ static struct uart_ops men_z135_ops = {
 	.verify_port = men_z135_verify_port,
 };
 
+static struct uart_driver men_z135_driver = {
+	.owner = THIS_MODULE,
+	.driver_name = KBUILD_MODNAME,
+	.dev_name = "ttyHSU",
+	.major = 0,
+	.minor = 0,
+	.nr = MEN_Z135_MAX_PORTS,
+};
+
 /**
  * men_z135_probe() - Probe a z135 instance
  * @chu: The chameleon unit
@@ -706,8 +711,6 @@ static int men_z135_probe(CHAMELEON_UNIT_T *chu)
 {
 	struct men_z135_port *uart;
 	struct device *dev;
-	struct uart_driver *men_z135_driver;
-	char dname[20];
 	int err;
 
 	dev = &chu->pdev->dev;
@@ -716,19 +719,9 @@ static int men_z135_probe(CHAMELEON_UNIT_T *chu)
 	if (!uart)
 		return -ENOMEM;
 
-	men_z135_driver = devm_kzalloc(dev, sizeof(struct uart_driver),
-				GFP_KERNEL);
-	if (!men_z135_driver)
+	uart->rxbuf = devm_kzalloc(dev, MEN_Z135_FIFO_SIZE, GFP_KERNEL);
+	if (!uart->rxbuf)
 		return -ENOMEM;
-
-	snprintf(dname, sizeof(dname), "men_z135_port%d", line);
-
-	men_z135_driver->owner = THIS_MODULE;
-	men_z135_driver->driver_name = dname;
-	men_z135_driver->dev_name = "ttyHSU";
-	men_z135_driver->major = 0;
-	men_z135_driver->minor = 0;
-	men_z135_driver->nr = 1;
 
 	chu->driver_data = uart;
 
@@ -743,12 +736,8 @@ static int men_z135_probe(CHAMELEON_UNIT_T *chu)
 	uart->port.timeout = (HZ/50)*2;
 	uart->pdev = chu->pdev;
 	uart->chu = chu;
-	uart->men_z135_driver = men_z135_driver;
 	uart->port.mapbase = (phys_addr_t) chu->phys;
 	uart->port.membase = NULL;
-
-	pr_err("%s() port->mapbase = 0x%lx, dname = '%s'\n",
-		__func__, (unsigned long) uart->port.mapbase, dname);
 
 	spin_lock_init(&uart->port.lock);
 
@@ -757,24 +746,13 @@ static int men_z135_probe(CHAMELEON_UNIT_T *chu)
 	tasklet_init(&uart->intrs[IRQ_TX], men_z135_handle_tx,
 		(unsigned long)uart);
 
-	err = uart_register_driver(men_z135_driver);
-	if (err) {
-		dev_err(dev, "Failed to register UART: %d\n", err);
-		goto err_mem;
-	}
-
-	err = uart_add_one_port(men_z135_driver, &uart->port);
+	err = uart_add_one_port(&men_z135_driver, &uart->port);
 	if (err) {
 		dev_err(dev, "Failed to add UART: %d\n", err);
-		goto err_add;
+		return err;
 	}
 	return 0;
 
-err_add:
-	uart_unregister_driver(men_z135_driver);
-
-err_mem:
-	return err;
 }
 
 /**
@@ -784,14 +762,9 @@ err_mem:
  */
 static int men_z135_remove(CHAMELEON_UNIT_T *chu)
 {
-	struct men_z135_port *uart;
-	struct uart_driver *men_z135_driver;
+	struct men_z135_port *uart = chu->driver_data;
 
-	uart = chu->driver_data;
-	men_z135_driver = uart->men_z135_driver;
-
-	uart_remove_one_port(men_z135_driver, &uart->port);
-	uart_unregister_driver(men_z135_driver);
+	uart_remove_one_port(&men_z135_driver, &uart->port);
 
 	return 0;
 }
@@ -814,8 +787,21 @@ static CHAMELEON_DRIVER_T cham_driver = {
  */
 static int __init men_z135_init(void)
 {
+	int err;
 	men_chameleon_register_driver(&cham_driver);
+
+	err = uart_register_driver(&men_z135_driver);
+	if (err)
+		goto fail;
+
 	return 0;
+
+fail:
+	pr_err("Failed to register UART: %d\n", err);
+	men_chameleon_unregister_driver(&cham_driver);
+
+	return err;
+
 }
 module_init(men_z135_init);
 
@@ -826,6 +812,7 @@ module_init(men_z135_init);
  */
 static void __exit men_z135_exit(void)
 {
+	uart_unregister_driver(&men_z135_driver);
 	men_chameleon_unregister_driver(&cham_driver);
 }
 module_exit(men_z135_exit);
