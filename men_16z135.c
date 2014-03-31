@@ -22,7 +22,7 @@
 #define MEN_Z135_BASECLK		3250000
 #define MEN_Z135_FIFO_SIZE		1024
 #define MEN_Z135_NUM_MSI_VECTORS	2
-#define MEN_Z135_TX_WATERMARK		1020
+#define MEN_Z135_FIFO_WATERMARK		1020
 
 #define MEN_Z135_STAT_REG		0x0
 #define MEN_Z135_RX_RAM			0x4
@@ -251,8 +251,11 @@ static void men_z135_handle_rx(unsigned long arg)
 		if (size == 0)
 			break;
 
-		if (size > MEN_Z135_FIFO_SIZE)
-			size = MEN_Z135_FIFO_SIZE;
+		/* Avoid accidently accessing TX FIFO, as HW might hang. Last
+		 * longword in FIFO cannot be read.
+		 */
+		if (size > MEN_Z135_FIFO_WATERMARK)
+			size = MEN_Z135_FIFO_WATERMARK;
 
 		memcpy_fromio(uart->rxbuf, port->membase + MEN_Z135_RX_RAM, size);
 		iowrite32(size, port->membase + 0x800);
@@ -312,10 +315,10 @@ static void men_z135_handle_tx(unsigned long arg)
 	txc = (wptr >> 16) & 0x3ff;
 	wptr &= 0x3ff;
 
-	txfree = MEN_Z135_TX_WATERMARK - txc;
+	txfree = MEN_Z135_FIFO_WATERMARK - txc;
 
-	/* if we're not aligned, it's better to copy only 1 byte and then the
-	 * rest
+	/* if we're not aligned, it's better to copy only 1 or 2 bytes and
+	 * then the rest.
 	 */
 	if (qlen >= 3 && BYTES_TO_ALIGN(wptr)) {
 		n = 4 - BYTES_TO_ALIGN(wptr);
