@@ -352,9 +352,11 @@ static int men_z135_request_msi(struct men_z135_port *uart)
 	int err = 0;
 
 	err = pci_enable_msi_block(uart->pdev, MEN_Z135_NUM_MSI_VECTORS);
-	if (err != 2) {
+	if (err) {
 		dev_warn(&uart->pdev->dev,
 			"Failed to request 2 MSI vectors, falling back to legacy IRQs\n");
+		if (err > 0)
+			dev_warn(&uart->pdev->dev, "Only able to request %d Vectors\n", err);
 		return -ENOTSUPP;
 	}
 	err = request_irq(chu->irq, men_z135_intr_msi_rx, IRQF_SHARED,
