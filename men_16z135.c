@@ -89,7 +89,6 @@ struct men_z135_port {
 	struct uart_port port;
 	struct tasklet_struct intrs[NUM_IRQS];
 	struct pci_dev *pdev;
-	struct uart_driver *men_z135_driver;
 	CHAMELEON_UNIT_T *chu;
 	char *rxbuf;
 	int msi;
@@ -730,10 +729,12 @@ static int men_z135_probe(CHAMELEON_UNIT_T *chu)
 	uart->port.iotype = UPIO_MEM;
 	uart->port.ops = &men_z135_ops;
 	uart->port.irq = chu->irq;
+	uart->port.iotype = UPIO_MEM;
 	uart->port.flags = UPF_BOOT_AUTOCONF | UPF_IOREMAP;
 	uart->port.line = line++;
 	uart->port.dev = dev;
 	uart->port.timeout = (HZ/50)*2;
+	uart->port.type = 29;
 	uart->pdev = chu->pdev;
 	uart->chu = chu;
 	uart->port.mapbase = (phys_addr_t) chu->phys;
@@ -751,6 +752,7 @@ static int men_z135_probe(CHAMELEON_UNIT_T *chu)
 		dev_err(dev, "Failed to add UART: %d\n", err);
 		return err;
 	}
+
 	return 0;
 
 }
@@ -762,8 +764,9 @@ static int men_z135_probe(CHAMELEON_UNIT_T *chu)
  */
 static int men_z135_remove(CHAMELEON_UNIT_T *chu)
 {
-	struct men_z135_port *uart = chu->driver_data;
+	struct men_z135_port *uart;
 
+	uart = chu->driver_data;
 	uart_remove_one_port(&men_z135_driver, &uart->port);
 
 	return 0;
@@ -788,20 +791,24 @@ static CHAMELEON_DRIVER_T cham_driver = {
 static int __init men_z135_init(void)
 {
 	int err;
-	men_chameleon_register_driver(&cham_driver);
 
 	err = uart_register_driver(&men_z135_driver);
-	if (err)
-		goto fail;
+	if (err) {
+		pr_err("Failed to register UART: %d\n", err);
+		return err;
+	}
+
+	err = men_chameleon_register_driver(&cham_driver);
+	if  (err <= 0) {
+		/* men_chameleon_register_driver oddly returns nr of
+		 * successfully registered modules, instead of 0/-E
+		 */
+		pr_err("Failed to register chameleon driver: %d\n", err);
+		uart_unregister_driver(&men_z135_driver);
+		return err;
+	}
 
 	return 0;
-
-fail:
-	pr_err("Failed to register UART: %d\n", err);
-	men_chameleon_unregister_driver(&cham_driver);
-
-	return err;
-
 }
 module_init(men_z135_init);
 
@@ -812,8 +819,8 @@ module_init(men_z135_init);
  */
 static void __exit men_z135_exit(void)
 {
-	uart_unregister_driver(&men_z135_driver);
 	men_chameleon_unregister_driver(&cham_driver);
+	uart_unregister_driver(&men_z135_driver);
 }
 module_exit(men_z135_exit);
 
