@@ -287,6 +287,9 @@ static void men_z135_handle_tx(unsigned long arg)
 	int qlen;
 	int n;
 	int txfree;
+	int head;
+	int tail;
+	int s;
 
 	spin_lock_irqsave(&port->lock, flags);
 
@@ -308,12 +311,15 @@ static void men_z135_handle_tx(unsigned long arg)
 	if (qlen <= 0)
 		goto out;
 
-	if (xmit->tail < 0)
+	if ((xmit->tail & (UART_XMIT_SIZE - 1)) < 0)
 		goto out;
 
 	wptr = ioread32(port->membase + MEN_Z135_TX_CTRL);
 	txc = (wptr >> 16) & 0x3ff;
 	wptr &= 0x3ff;
+
+	if (txc > MEN_Z135_FIFO_WATERMARK)
+		txc = MEN_Z135_FIFO_WATERMARK;
 
 	txfree = MEN_Z135_FIFO_WATERMARK - txc;
 
@@ -327,11 +333,21 @@ static void men_z135_handle_tx(unsigned long arg)
 	} else
 		n = qlen;
 
+	if (n <= 0)
+		goto irq_en;
+
+	head = xmit->head & (UART_XMIT_SIZE - 1);
+	tail = xmit->tail & (UART_XMIT_SIZE - 1);
+
+	s = ((head >= tail) ? head : UART_XMIT_SIZE) - tail;
+	n = min(n, s);
+
 	memcpy_toio(port->membase + MEN_Z135_TX_RAM, &xmit->buf[xmit->tail], n);
 	xmit->tail = (xmit->tail + n) & (UART_XMIT_SIZE - 1);
 
 	iowrite32(n & 0x3ff, port->membase + MEN_Z135_TX_CTRL);
 
+irq_en:
 	if (!uart_circ_empty(xmit))
 		men_z135_reg_set(uart, MEN_Z135_CONF_REG, TXCIEN);
 
