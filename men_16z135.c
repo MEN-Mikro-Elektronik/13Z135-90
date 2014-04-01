@@ -436,7 +436,7 @@ static unsigned int men_z135_tx_empty(struct uart_port *port)
 	stat_reg = ioread32(port->membase + MEN_Z135_STAT_REG);
 
 	lsr = (stat_reg >> 16) & 0xff;
-	if (lsr & BIT(5) && lsr & BIT(6))
+	if ((lsr & BIT(5)) && (lsr & BIT(6)))
 		return TIOCSER_TEMT;
 	else
 		return 0;
@@ -561,7 +561,9 @@ static int men_z135_startup(struct uart_port *port)
 	if (err)
 		return -ENODEV;
 
-	conf_reg |= (RXCIEN | RLSIEN | MSIEN) | (3 << 20);
+	conf_reg |= (RXCIEN | RLSIEN | MSIEN);
+	conf_reg |= (3 << 20);		/* RX Level */
+	conf_reg |= (3 << 16);		/* TX Level */
 	men_z135_reg_set(uart, MEN_Z135_CONF_REG, conf_reg);
 
 	return 0;
