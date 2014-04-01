@@ -510,16 +510,6 @@ static void men_z135_start_tx(struct uart_port *port)
 }
 
 /**
- * men_z135_flush_buffer() - Flush write buffers
- * @port: The UART port
- *
- * Flush write buffers by setting the TX FIFO's write pointer to 0.
- */
-static void men_z135_flush_buffer(struct uart_port *port)
-{
-}
-
-/**
  * men_z135_stop_rx() - Stop receiving characters
  * @port: The UART port
  *
@@ -682,7 +672,6 @@ static struct uart_ops men_z135_ops = {
 	.get_mctrl = men_z135_get_mctrl,
 	.stop_tx = men_z135_stop_tx,
 	.start_tx = men_z135_start_tx,
-	.flush_buffer = men_z135_flush_buffer,
 	.stop_rx = men_z135_stop_rx,
 	.enable_ms = men_z135_enable_ms,
 	.startup = men_z135_startup,
