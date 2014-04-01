@@ -90,7 +90,7 @@ struct men_z135_port {
 	struct tasklet_struct intrs[NUM_IRQS];
 	struct pci_dev *pdev;
 	CHAMELEON_UNIT_T *chu;
-	char *rxbuf;
+	unsigned char *rxbuf;
 	int msi;
 	u32 stat_reg;
 };
@@ -712,7 +712,7 @@ static int men_z135_probe(CHAMELEON_UNIT_T *chu)
 	if (!uart)
 		return -ENOMEM;
 
-	uart->rxbuf = devm_kzalloc(dev, MEN_Z135_FIFO_SIZE, GFP_KERNEL);
+	uart->rxbuf = (unsigned char *)__get_free_page(GFP_KERNEL);
 	if (!uart->rxbuf)
 		return -ENOMEM;
 
@@ -762,7 +762,7 @@ static int men_z135_remove(CHAMELEON_UNIT_T *chu)
 
 	uart = chu->driver_data;
 	uart_remove_one_port(&men_z135_driver, &uart->port);
-
+	free_page((unsigned long)uart->rxbuf);
 	return 0;
 }
 
