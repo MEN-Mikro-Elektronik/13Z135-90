@@ -247,12 +247,14 @@ static void men_z135_handle_rx(unsigned long arg)
 	struct tty_port *tport = &uart->port.state->port;
 	unsigned long flags;
 	int i;
-	u16 size;
-	int copied;
 
 	spin_lock_irqsave(&port->lock, flags);
 
 	for (i = 0; i < budget; i++) {
+		int copied;
+		u16 size;
+		int room;
+
 		size = get_rx_fifo_content(uart);
 		if (size == 0)
 			break;
@@ -266,7 +268,17 @@ static void men_z135_handle_rx(unsigned long arg)
 		memcpy_fromio(uart->rxbuf, port->membase + MEN_Z135_RX_RAM, size);
 		iowrite32(size, port->membase + 0x800);
 
-		copied = tty_insert_flip_string(tport, uart->rxbuf, size);
+		room = tty_buffer_request_room(tport, size);
+
+		if (room != size)
+			pr_warn("Not enough room in flip buffer, truncating to %d\n",
+				room);
+
+		copied = tty_insert_flip_string(tport, uart->rxbuf, room);
+		if (copied != room)
+			pr_warn("Only copied %d instead of %d bytes\n", copied,	room);
+
+		port->icount.rx += copied;
 
 		spin_unlock_irqrestore(&port->lock, flags);
 		tty_flip_buffer_push(tport);
@@ -352,6 +364,8 @@ static void men_z135_handle_tx(unsigned long arg)
 	xmit->tail = (xmit->tail + n) & (UART_XMIT_SIZE - 1);
 
 	iowrite32(n & 0x3ff, port->membase + MEN_Z135_TX_CTRL);
+
+	port->icount.tx += n;
 
 irq_en:
 	if (!uart_circ_empty(xmit))
