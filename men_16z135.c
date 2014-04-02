@@ -10,10 +10,12 @@
  */
 #define pr_fmt(fmt) KBUILD_MODNAME ":" fmt
 
+#include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/interrupt.h>
 #include <linux/serial_core.h>
 #include <linux/ioport.h>
+#include <linux/io.h>
 #include <linux/tty_flip.h>
 
 #include <MEN/men_chameleon.h>
@@ -143,6 +145,23 @@ static inline void men_z135_reg_clr(struct men_z135_port *uart,
 	reg = ioread32(port->membase + addr);
 	reg &= ~val;
 	iowrite32(reg, port->membase + addr);
+}
+
+/**
+ * men_z135_handle_modem_status() - Handle change of modem status
+ * @port: The UART port
+ *
+ * Handle change of modem status register. This is done by reading the "delta"
+ * versions of DCD (Data Carrier Detect) and CTS (Clear To Send).
+ */
+static void men_z135_handle_modem_status(struct men_z135_port *uart)
+{
+	if (uart->stat_reg & MEN_Z135_MSR_DDCD)
+		uart_handle_dcd_change(&uart->port,
+				uart->stat_reg & MEN_Z135_MSR_DCD);
+	if (uart->stat_reg & MEN_Z135_MSR_DCTS)
+		uart_handle_cts_change(&uart->port,
+				uart->stat_reg & MEN_Z135_MSR_CTS);
 }
 
 /**
@@ -319,6 +338,8 @@ static void men_z135_handle_tx(unsigned long arg)
 	int s;
 
 	spin_lock_irqsave(&port->lock, flags);
+
+	men_z135_handle_modem_status(uart);
 
 	if (uart_circ_empty(xmit))
 		goto out;
