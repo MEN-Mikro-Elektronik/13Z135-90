@@ -39,17 +39,26 @@
 #define IRQ_PENDING(x) ((x) & 1)
 #define IRQ_ID(x) (((x) >> 1) & 7)
 
-#define RXCIEN BIT(0)		/* TX Space IRQ enable */
-#define TXCIEN BIT(1)		/* RX Space IRQ enable */
-#define RLSIEN BIT(2)		/* Receiver Line Status IRQ enable */
-#define MSIEN  BIT(3)		/* Modem Status IRQ enable */
+#define MEN_Z135_IER_RXCIEN BIT(0)		/* TX Space IRQ enable */
+#define MEN_Z135_IER_TXCIEN BIT(1)		/* RX Space IRQ enable */
+#define MEN_Z135_IER_RLSIEN BIT(2)		/* Receiver Line Status IRQ enable */
+#define MEN_Z135_IER_MSIEN  BIT(3)		/* Modem Status IRQ enable */
 
-#define DTR BIT(24)
-#define RTS BIT(25)
-#define OUT1 BIT(26)
-#define OUT2 BIT(27)
-#define LOOP BIT(28)
-#define RCFC BIT(29)
+#define MEN_Z135_MCR_DTR	BIT(24)
+#define MEN_Z135_MCR_RTS	BIT(25)
+#define MEN_Z135_MCR_OUT1	BIT(26)
+#define MEN_Z135_MCR_OUT2	BIT(27)
+#define MEN_Z135_MCR_LOOP	BIT(28)
+#define MEN_Z135_MCR_RCFC	BIT(29)
+
+#define MEN_Z135_MSR_DCTS	BIT(0)
+#define MEN_Z135_MSR_DDSR	BIT(1)
+#define MEN_Z135_MSR_DRI	BIT(2)
+#define MEN_Z135_MSR_DDCD	BIT(3)
+#define MEN_Z135_MSR_CTS	BIT(4)
+#define MEN_Z135_MSR_DSR	BIT(5)
+#define MEN_Z135_MSR_RI		BIT(6)
+#define MEN_Z135_MSR_DCD	BIT(7)
 
 #define MEN_Z135_LCR_SHIFT 8	/* LCR shift mask */
 
@@ -147,7 +156,7 @@ static irqreturn_t men_z135_intr_msi_tx(int irq, void *data)
 {
 	struct men_z135_port *uart = (struct men_z135_port *)data;
 
-	men_z135_reg_clr(uart, MEN_Z135_CONF_REG, TXCIEN);
+	men_z135_reg_clr(uart, MEN_Z135_CONF_REG, MEN_Z135_IER_TXCIEN);
 	tasklet_schedule(&uart->intrs[IRQ_TX]);
 
 	return IRQ_HANDLED;
@@ -165,7 +174,7 @@ static irqreturn_t men_z135_intr_msi_rx(int irq, void *data)
 {
 	struct men_z135_port *uart = (struct men_z135_port *)data;
 
-	men_z135_reg_clr(uart, MEN_Z135_CONF_REG, RXCIEN);
+	men_z135_reg_clr(uart, MEN_Z135_CONF_REG, MEN_Z135_IER_RXCIEN);
 	tasklet_schedule(&uart->intrs[IRQ_RX]);
 
 	return IRQ_HANDLED;
@@ -192,10 +201,10 @@ static irqreturn_t men_z135_intr(int irq, void *data)
 	irq_id = IRQ_ID(uart->stat_reg);
 
 	if (irq_id == 0 || irq_id == 1) {
-		men_z135_reg_clr(uart, MEN_Z135_CONF_REG, TXCIEN);
+		men_z135_reg_clr(uart, MEN_Z135_CONF_REG, MEN_Z135_IER_TXCIEN);
 		tasklet_schedule(&uart->intrs[IRQ_TX]);
 	} else if (irq_id == 2 || irq_id == 3 || irq_id == 6) {
-		men_z135_reg_clr(uart, MEN_Z135_CONF_REG, RXCIEN);
+		men_z135_reg_clr(uart, MEN_Z135_CONF_REG, MEN_Z135_IER_RXCIEN);
 		tasklet_schedule(&uart->intrs[IRQ_RX]);
 	} else {
 		dev_warn(&uart->pdev->dev, "Unknown IRQ id %d\n", irq_id);
@@ -284,7 +293,7 @@ static void men_z135_handle_rx(unsigned long arg)
 		tty_flip_buffer_push(tport);
 		spin_lock_irqsave(&port->lock, flags);
 	}
-	men_z135_reg_set(uart, MEN_Z135_CONF_REG, RXCIEN);
+	men_z135_reg_set(uart, MEN_Z135_CONF_REG, MEN_Z135_IER_RXCIEN);
 
 	spin_unlock_irqrestore(&port->lock, flags);
 }
@@ -369,7 +378,7 @@ static void men_z135_handle_tx(unsigned long arg)
 
 irq_en:
 	if (!uart_circ_empty(xmit))
-		men_z135_reg_set(uart, MEN_Z135_CONF_REG, TXCIEN);
+		men_z135_reg_set(uart, MEN_Z135_CONF_REG, MEN_Z135_IER_TXCIEN);
 
 out:
 	spin_unlock_irqrestore(&port->lock, flags);
@@ -476,15 +485,15 @@ static void men_z135_set_mctrl(struct uart_port *port, unsigned int mctrl)
 	u32 conf_reg = 0;
 
 	if (mctrl & TIOCM_RTS)
-		conf_reg |= RTS;
+		conf_reg |= MEN_Z135_MCR_RTS;
 	if (mctrl & TIOCM_DTR)
-		conf_reg |= DTR;
+		conf_reg |= MEN_Z135_MCR_DTR;
 	if (mctrl & TIOCM_OUT1)
-		conf_reg |= OUT1;
+		conf_reg |= MEN_Z135_MCR_OUT1;
 	if (mctrl & TIOCM_OUT2)
-		conf_reg |= OUT2;
+		conf_reg |= MEN_Z135_MCR_OUT2;
 	if (mctrl & TIOCM_LOOP)
-		conf_reg |= LOOP;
+		conf_reg |= MEN_Z135_MCR_LOOP;
 
 	men_z135_reg_set(uart, MEN_Z135_CONF_REG, conf_reg);
 }
@@ -498,20 +507,22 @@ static void men_z135_set_mctrl(struct uart_port *port, unsigned int mctrl)
 static unsigned int men_z135_get_mctrl(struct uart_port *port)
 {
 	unsigned int mctrl = 0;
-	u32 conf_reg;
+	u32 stat_reg;
+	u8 msr;
 
-	conf_reg = ioread32(port->membase + MEN_Z135_CONF_REG);
+	stat_reg = ioread32(port->membase + MEN_Z135_STAT_REG);
 
-	if (conf_reg & RTS)
-		mctrl |= TIOCM_RTS;
-	if (conf_reg & DTR)
-		mctrl |= TIOCM_DTR;
-	if (conf_reg & OUT1)
-		mctrl |= TIOCM_OUT1;
-	if (conf_reg & OUT2)
-		mctrl |= TIOCM_OUT2;
-	if (conf_reg & LOOP)
-		mctrl |= TIOCM_LOOP;
+	msr = (stat_reg >> 8) & 0xff;
+	pr_err("%s() msr = 0x%x\n", __func__, msr);
+
+	if (msr & MEN_Z135_MSR_CTS)
+		msr |= TIOCM_CTS;
+	if (msr & MEN_Z135_MSR_DSR)
+		msr |= TIOCM_DSR;
+	if (msr & MEN_Z135_MSR_RI)
+		msr |= TIOCM_RI;
+	if (msr & MEN_Z135_MSR_DCD)
+		msr |= TIOCM_CAR;
 
 	return mctrl;
 }
@@ -528,7 +539,7 @@ static void men_z135_stop_tx(struct uart_port *port)
 {
 	struct men_z135_port *uart = to_men_z135(port);
 
-	men_z135_reg_clr(uart, MEN_Z135_CONF_REG, TXCIEN);
+	men_z135_reg_clr(uart, MEN_Z135_CONF_REG, MEN_Z135_IER_TXCIEN);
 }
 
 /**
@@ -555,7 +566,7 @@ static void men_z135_stop_rx(struct uart_port *port)
 {
 	struct men_z135_port *uart = to_men_z135(port);
 
-	men_z135_reg_clr(uart, MEN_Z135_CONF_REG, RXCIEN);
+	men_z135_reg_clr(uart, MEN_Z135_CONF_REG, MEN_Z135_IER_RXCIEN);
 }
 
 /**
@@ -568,7 +579,7 @@ static void men_z135_enable_ms(struct uart_port *port)
 {
 	struct men_z135_port *uart = to_men_z135(port);
 
-	men_z135_reg_set(uart, MEN_Z135_CONF_REG, MSIEN);
+	men_z135_reg_set(uart, MEN_Z135_CONF_REG, MEN_Z135_IER_MSIEN);
 }
 
 static int men_z135_startup(struct uart_port *port)
@@ -581,10 +592,10 @@ static int men_z135_startup(struct uart_port *port)
 	if (err)
 		return -ENODEV;
 
-	conf_reg |= (RXCIEN | RLSIEN | MSIEN);
-	conf_reg &= ~(0xff << 16);
+	conf_reg |= (MEN_Z135_IER_RXCIEN | MEN_Z135_IER_RLSIEN | MEN_Z135_IER_MSIEN);
+	conf_reg &= ~(0xff << 16);	
 	conf_reg |= (txlvl << 16);
-	conf_reg |= (rxlvl << 20);
+	conf_reg |= (txlvl << 20);
 	men_z135_reg_set(uart, MEN_Z135_CONF_REG, conf_reg);
 
 	return 0;
@@ -595,7 +606,7 @@ static void men_z135_shutdown(struct uart_port *port)
 	struct men_z135_port *uart = to_men_z135(port);
 	u32 conf_reg = 0;
 
-	conf_reg |= (RXCIEN | RLSIEN | MSIEN);
+	conf_reg |= (MEN_Z135_IER_RXCIEN | MEN_Z135_IER_RLSIEN | MEN_Z135_IER_MSIEN);
 	men_z135_reg_clr(uart, MEN_Z135_CONF_REG, conf_reg);
 
 	free_irq(uart->port.irq, uart);
