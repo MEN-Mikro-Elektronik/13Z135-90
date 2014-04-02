@@ -79,6 +79,12 @@ static int line = 0;
 static int budget = 32;
 module_param(budget, int, S_IRUGO);
 
+static int txlvl = 3;
+module_param(txlvl, int, S_IRUGO);
+
+static int rxlvl = 3;
+module_param(rxlvl, int, S_IRUGO);
+
 enum {
 	IRQ_RX = 0,
 	IRQ_TX,
@@ -562,8 +568,9 @@ static int men_z135_startup(struct uart_port *port)
 		return -ENODEV;
 
 	conf_reg |= (RXCIEN | RLSIEN | MSIEN);
-	conf_reg |= (3 << 20);		/* RX Level */
-	conf_reg |= (3 << 16);		/* TX Level */
+	conf_reg &= ~(0xff << 16);
+	conf_reg |= (txlvl << 16);
+	conf_reg |= (rxlvl << 20);
 	men_z135_reg_set(uart, MEN_Z135_CONF_REG, conf_reg);
 
 	return 0;
