@@ -614,7 +614,7 @@ static int men_z135_startup(struct uart_port *port)
 		return -ENODEV;
 
 	conf_reg |= (MEN_Z135_IER_RXCIEN | MEN_Z135_IER_RLSIEN | MEN_Z135_IER_MSIEN);
-	conf_reg &= ~(0xff << 16);	
+	conf_reg &= ~(0xff << 16);
 	conf_reg |= (txlvl << 16);
 	conf_reg |= (txlvl << 20);
 	men_z135_reg_set(uart, MEN_Z135_CONF_REG, conf_reg);
@@ -791,14 +791,12 @@ static int men_z135_probe(CHAMELEON_UNIT_T *chu)
 
 	uart->port.uartclk = MEN_Z135_BASECLK * 16;
 	uart->port.fifosize = MEN_Z135_FIFO_SIZE;
-	uart->port.iotype = UPIO_MEM;
 	uart->port.ops = &men_z135_ops;
 	uart->port.irq = chu->irq;
 	uart->port.iotype = UPIO_MEM;
 	uart->port.flags = UPF_BOOT_AUTOCONF | UPF_IOREMAP;
 	uart->port.line = line++;
 	uart->port.dev = dev;
-	uart->port.timeout = (HZ/50)*2;
 	uart->port.type = 29;
 	uart->pdev = chu->pdev;
 	uart->chu = chu;
