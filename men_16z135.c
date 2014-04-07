@@ -294,6 +294,7 @@ static void men_z135_handle_rx(unsigned long arg)
 			size = MEN_Z135_FIFO_WATERMARK;
 
 		memcpy_fromio(uart->rxbuf, port->membase + MEN_Z135_RX_RAM, size);
+		mb();
 		iowrite32(size, port->membase + 0x800);
 
 		room = tty_buffer_request_room(tport, size);
@@ -392,6 +393,7 @@ static void men_z135_handle_tx(unsigned long arg)
 
 	memcpy_toio(port->membase + MEN_Z135_TX_RAM, &xmit->buf[xmit->tail], n);
 	xmit->tail = (xmit->tail + n) & (UART_XMIT_SIZE - 1);
+	mb();
 
 	iowrite32(n & 0x3ff, port->membase + MEN_Z135_TX_CTRL);
 
