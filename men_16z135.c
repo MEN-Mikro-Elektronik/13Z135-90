@@ -424,7 +424,7 @@ static irqreturn_t men_z135_intr(int irq, void *data)
 	if (irq_id & MEN_Z135_IRQ_ID_TSA) {
 		bool more;
 		more = men_z135_handle_tx(uart);
-		if (!more)
+		if (more)
 			irqs |= MEN_Z135_IER_TXCIEN;
 		handled = 1;
 	}
