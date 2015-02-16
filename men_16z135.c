@@ -425,7 +425,7 @@ static irqreturn_t men_z135_intr(int irq, void *data)
 		bool more;
 		more = men_z135_handle_tx(uart);
 		if (!more)
-			irqs &= ~MEN_Z135_IER_TXCIEN;
+			irqs |= MEN_Z135_IER_TXCIEN;
 		handled = 1;
 	}
 
@@ -594,7 +594,7 @@ static void men_z135_start_tx(struct uart_port *port)
 
 	more = men_z135_handle_tx(uart);
 	if (more)
-		men_z135_reg_set(uart, MEN_Z135_CONF_REG, MEN_Z135_IER_TXCIEN)
+		men_z135_reg_set(uart, MEN_Z135_CONF_REG, MEN_Z135_IER_TXCIEN);
 }
 
 /**
