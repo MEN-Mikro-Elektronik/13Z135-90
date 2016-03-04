@@ -841,7 +841,6 @@ static int men_z135_probe(CHAMELEON_UNIT_T *chu)
 	uart->port.mapbase = (phys_addr_t) chu->phys;
 	uart->port.membase = NULL;
 
-	spin_lock_init(&uart->port.lock);
 	spin_lock_init(&uart->lock);
 
 	err = uart_add_one_port(&men_z135_driver, &uart->port);
