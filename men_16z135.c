@@ -706,6 +706,7 @@ static void men_z135_set_termios(struct uart_port *port,
 	if (termios->c_cflag & CRTSCTS) {
 		conf_reg |= MEN_Z135_MCR_RCFC;
 		uart->automode = true;
+		termios->c_cflag &= ~CLOCAL;
 	} else {
 		conf_reg &= ~MEN_Z135_MCR_RCFC;
 		uart->automode = false;
