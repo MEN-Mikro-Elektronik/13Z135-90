@@ -867,7 +867,7 @@ static int men_z135_remove(CHAMELEON_UNIT_T *chu)
 	return 0;
 }
 
-static u16 mod_code_arr[] = { 0xbd,
+static u16 mod_code_arr[] = { 0x87,
 			      CHAMELEON_MODCODE_END };
 
 static CHAMELEON_DRIVER_T cham_driver = {
