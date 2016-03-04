@@ -493,7 +493,6 @@ static unsigned int men_z135_tx_empty(struct uart_port *port)
  */
 static void men_z135_set_mctrl(struct uart_port *port, unsigned int mctrl)
 {
-	struct men_z135_port *uart = to_men_z135(port);
 	u32 old;
 	u32 conf_reg;
 
