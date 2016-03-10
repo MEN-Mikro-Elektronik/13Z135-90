@@ -21,6 +21,6 @@ MAK_SWITCH =
 
 MAK_INCL=$(MEN_INC_DIR)/../../NATIVE/MEN/men_chameleon.h 
 
-MAK_INP1=men_lx_z135$(INP_SUFFIX)
+MAK_INP1=men_mdis_z135$(INP_SUFFIX)
 
 MAK_INP=$(MAK_INP1)

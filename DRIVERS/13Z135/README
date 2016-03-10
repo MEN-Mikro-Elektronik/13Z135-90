@@ -1,0 +1,3 @@
+the Makefile provided is for native out-of-tree kernel module build.
+MDIS build is done using the usual driver/driver_sw.mak files
+

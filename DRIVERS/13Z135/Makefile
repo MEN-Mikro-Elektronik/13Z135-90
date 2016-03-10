@@ -4,7 +4,7 @@ ifneq ($(KERNELRELEASE),)
 	ccflags-y += -I/opt/menlinux/INCLUDE/COM/
 else
 #	KERNELDIR ?= /lib/modules/$(shell uname -r)/build
-	KERNELDIR ?= /home/jt/src/linux-trees/linux
+	KERNELDIR ?= /usr/src/linux
 
 default:
 	$(MAKE) -C $(KERNELDIR) M=$$PWD modules
