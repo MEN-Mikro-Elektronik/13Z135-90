@@ -1,3 +1,27 @@
+commit 24ddaff055ea16a06733eb2016ff44eaca05f9de
+Author: thomas.schnuerer <thomas.schnuerer@men>
+Date:   Thu Mar 10 10:26:25 2016 +0100
+
+    R: applied change in driver.mak also to driver_sw.mak
+
+commit fb2b7f94802f47966d2fb948eb809f00e1c27181
+Author: thomas.schnuerer <thomas.schnuerer@men>
+Date:   Thu Mar 10 10:24:33 2016 +0100
+
+    R: corrected circular file dependency in driver.mak
+
+commit 90f503df88fb3c62a45c5f11caf4ed159051affb
+Author: thomas.schnuerer <thomas.schnuerer@men>
+Date:   Thu Mar 10 09:53:40 2016 +0100
+
+    R: corrected description in xml file, calling the UART 'highspeed' UART
+
+commit 5dedec2e7f72f2823872cea7316ec4bdbe8751a1
+Author: thomas.schnuerer <thomas.schnuerer@men>
+Date:   Thu Mar 10 08:57:29 2016 +0100
+
+    reworked directory structure for import in MDIS package
+
 commit 8dee0c127482ff418d6c9de668ea21bedb884f79
 Author: Andreas Werner <andreas.werner@men.de>
 Date:   Fri Mar 4 12:43:00 2016 +0100
