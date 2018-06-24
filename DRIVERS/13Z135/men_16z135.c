@@ -22,7 +22,7 @@
 #include <MEN/men_chameleon.h>
 
 #define MEN_Z135_MAX_PORTS		12
-#define MEN_Z135_BASECLK		3250000
+#define MEN_Z135_BASECLK		29491200
 #define MEN_Z135_FIFO_SIZE		1024
 #define MEN_Z135_FIFO_WATERMARK		1020
 
@@ -40,14 +40,14 @@
 
 #define IRQ_ID(x) ((x) & 0x1f)
 
-#define MEN_Z135_IER_RXCIEN BIT(0)		/* RX Space IRQ enable */
-#define MEN_Z135_IER_TXCIEN BIT(1)		/* TX Space IRQ enable */
-#define MEN_Z135_IER_RLSIEN BIT(2)		/* Receiver Line Status IRQ enable */
-#define MEN_Z135_IER_MSIEN  BIT(3)		/* Modem Status IRQ enable */
-#define MEN_Z135_ALL_IRQS (MEN_Z135_IER_RXCIEN \
-			   | MEN_Z135_IER_RLSIEN \
-			   | MEN_Z135_IER_MSIEN \
-			   | MEN_Z135_IER_TXCIEN)
+#define MEN_Z135_IER_RXCIEN BIT(0)		/* RX Space IRQ */
+#define MEN_Z135_IER_TXCIEN BIT(1)		/* TX Space IRQ */
+#define MEN_Z135_IER_RLSIEN BIT(2)		/* Receiver Line Status IRQ */
+#define MEN_Z135_IER_MSIEN  BIT(3)		/* Modem Status IRQ */
+#define MEN_Z135_ALL_IRQS (MEN_Z135_IER_RXCIEN		\
+				| MEN_Z135_IER_RLSIEN	\
+				| MEN_Z135_IER_MSIEN	\
+				| MEN_Z135_IER_TXCIEN)
 
 #define MEN_Z135_MCR_DTR	BIT(24)
 #define MEN_Z135_MCR_RTS	BIT(25)
@@ -98,11 +98,12 @@
 #define MEN_Z135_IRQ_ID_CTI BIT(2)
 #define MEN_Z135_IRQ_ID_TSA BIT(3)
 #define MEN_Z135_IRQ_ID_MST BIT(4)
+
 #define LCR(x) (((x) >> MEN_Z135_LCR_SHIFT) & 0xff)
 
 #define BYTES_TO_ALIGN(x) ((x) & 0x3)
 
-static int line = 0;
+static int line;
 
 static int txlvl = 5;
 module_param(txlvl, int, S_IRUGO);
@@ -118,7 +119,8 @@ MODULE_PARM_DESC(align, "Keep hardware FIFO write pointer aligned, default 0");
 
 static uint rx_timeout;
 module_param(rx_timeout, uint, S_IRUGO);
-MODULE_PARM_DESC(rx_timeout, "RX timeout");
+MODULE_PARM_DESC(rx_timeout, "RX timeout. "
+		"Timeout in seconds = (timeout_reg * baud_reg * 4) / freq_reg");
 
 struct men_z135_port {
 	struct uart_port port;
@@ -145,9 +147,11 @@ static inline void men_z135_reg_set(struct men_z135_port *uart,
 	u32 reg;
 
 	spin_lock_irqsave(&uart->lock, flags);
+
 	reg = ioread32(port->membase + addr);
 	reg |= val;
 	iowrite32(reg, port->membase + addr);
+
 	spin_unlock_irqrestore(&uart->lock, flags);
 }
 
@@ -157,7 +161,7 @@ static inline void men_z135_reg_set(struct men_z135_port *uart,
  * @addr: Register address
  * @val: value to clear
  */
-static inline void men_z135_reg_clr(struct men_z135_port *uart,
+static void men_z135_reg_clr(struct men_z135_port *uart,
 				u32 addr, u32 val)
 {
 	struct uart_port *port = &uart->port;
@@ -165,9 +169,11 @@ static inline void men_z135_reg_clr(struct men_z135_port *uart,
 	u32 reg;
 
 	spin_lock_irqsave(&uart->lock, flags);
+
 	reg = ioread32(port->membase + addr);
 	reg &= ~val;
 	iowrite32(reg, port->membase + addr);
+
 	spin_unlock_irqrestore(&uart->lock, flags);
 }
 
@@ -181,6 +187,7 @@ static inline void men_z135_reg_clr(struct men_z135_port *uart,
 static void men_z135_handle_modem_status(struct men_z135_port *uart)
 {
 	u8 msr;
+
 	msr = (uart->stat_reg >> 8) & 0xff;
 
 	if (msr & MEN_Z135_MSR_DDCD)
@@ -208,7 +215,6 @@ static void men_z135_handle_lsr(struct men_z135_port *uart)
 		port->icount.brk++;
 		uart_handle_break(port);
 	}
-
 }
 
 /**
@@ -225,9 +231,7 @@ static u16 get_rx_fifo_content(struct men_z135_port *uart)
 	u8 rxc_lo;
 	u8 rxc_hi;
 
-
 	stat_reg = ioread32(port->membase + MEN_Z135_STAT_REG);
-
 	rxc_lo = stat_reg >> 24;
 	rxc_hi = (stat_reg & 0xC0) >> 6;
 
@@ -244,28 +248,29 @@ static u16 get_rx_fifo_content(struct men_z135_port *uart)
  */
 static void men_z135_handle_rx(struct men_z135_port *uart)
 {
-		struct uart_port *port = &uart->port;
-	struct tty_port *tport = &uart->port.state->port;
-		int copied;
-		u16 size;
-		int room;
+	struct uart_port *port = &uart->port;
+	struct tty_port *tport = &port->state->port;
+	int copied;
+	u16 size;
+	int room;
 
-		size = get_rx_fifo_content(uart);
-		if (size == 0)
+	size = get_rx_fifo_content(uart);
+
+	if (size == 0)
 		return;
 
-		/* Avoid accidently accessing TX FIFO instead of RX FIFO. Last
-		 * longword in RX FIFO cannot be read.(0x004-0x3FF)
-		 */
-		if (size > MEN_Z135_FIFO_WATERMARK)
-			size = MEN_Z135_FIFO_WATERMARK;
+	/* Avoid accidently accessing TX FIFO instead of RX FIFO. Last
+	 * longword in RX FIFO cannot be read.(0x004-0x3FF)
+	 */
+	if (size > MEN_Z135_FIFO_WATERMARK)
+		size = MEN_Z135_FIFO_WATERMARK;
 
+	room = tty_buffer_request_room(tport, size);
+	if (room != size)
+		dev_dbg(uart->port.dev,
+			"Not enough room in flip buffer, truncating to %d\n",
+			room);
 
-		room = tty_buffer_request_room(tport, size);
-
-		if (room != size)
-		printk(KERN_INFO "Not enough room in flip buffer, truncating to %d\n",
-				room);
 	if (room == 0)
 		return;
 
@@ -274,13 +279,15 @@ static void men_z135_handle_rx(struct men_z135_port *uart)
 	mb();
 	iowrite32(room, port->membase +  MEN_Z135_RX_CTRL);
 
-		copied = tty_insert_flip_string(tport, uart->rxbuf, room);
-		if (copied != room)
-		printk(KERN_INFO "Only copied %d instead of %d bytes\n", copied, room);
+	copied = tty_insert_flip_string(tport, uart->rxbuf, room);
+	if (copied != room)
+		dev_warn(uart->port.dev,
+			"Only copied %d instead of %d bytes\n",
+			copied, room);
 
-		port->icount.rx += copied;
+	port->icount.rx += copied;
 
-		tty_flip_buffer_push(tport);
+	tty_flip_buffer_push(tport);
 
 }
 
@@ -288,13 +295,11 @@ static void men_z135_handle_rx(struct men_z135_port *uart)
  * men_z135_handle_tx() - TX tasklet routine
  * @arg: Pointer to struct men_z135_port
  *
- * Returns if more data is expected
  */
-static bool men_z135_handle_tx(struct men_z135_port *uart)
+static void men_z135_handle_tx(struct men_z135_port *uart)
 {
 	struct uart_port *port = &uart->port;
 	struct circ_buf *xmit = &port->state->xmit;
-	bool more;
 	u32 txc;
 	u32 wptr;
 	int qlen;
@@ -304,24 +309,19 @@ static bool men_z135_handle_tx(struct men_z135_port *uart)
 	int tail;
 	int s;
 
-	more = false;
-
 	if (uart_circ_empty(xmit))
 		goto out;
 
 	if (uart_tx_stopped(port))
 		goto out;
 
-
 	if (port->x_char)
 		goto out;
-
 
 	/* calculate bytes to copy */
 	qlen = uart_circ_chars_pending(xmit);
 	if (qlen <= 0)
 		goto out;
-
 
 	wptr = ioread32(port->membase + MEN_Z135_TX_CTRL);
 	txc = (wptr >> 16) & 0x3ff;
@@ -332,8 +332,10 @@ static bool men_z135_handle_tx(struct men_z135_port *uart)
 
 	txfree = MEN_Z135_FIFO_WATERMARK - txc;
 	if (txfree <= 0) {
-	  printk(KERN_INFO "Not enough room in TX FIFO have %d\n", txfree);
-	  goto irq_en;
+		dev_dbg(uart->port.dev,
+			"Not enough room in TX FIFO have %d, need %d\n",
+			txfree, qlen);
+		goto irq_en;
 	}
 
 	/* if we're not aligned, it's better to copy only 1 or 2 bytes and
@@ -362,14 +364,18 @@ static bool men_z135_handle_tx(struct men_z135_port *uart)
 	iowrite32(n & 0x3ff, port->membase + MEN_Z135_TX_CTRL);
 
 	port->icount.tx += n;
+
 	if (uart_circ_chars_pending(xmit) < WAKEUP_CHARS)
 		uart_write_wakeup(port);
 
 irq_en:
 	if (!uart_circ_empty(xmit))
-		more = true;
+		men_z135_reg_set(uart, MEN_Z135_CONF_REG, MEN_Z135_IER_TXCIEN);
+	else
+		men_z135_reg_clr(uart, MEN_Z135_CONF_REG, MEN_Z135_IER_TXCIEN);
+
 out:
-	return more;
+	return;
 
 }
 
@@ -387,17 +393,11 @@ static irqreturn_t men_z135_intr(int irq, void *data)
 {
 	struct men_z135_port *uart = (struct men_z135_port *)data;
 	struct uart_port *port = &uart->port;
-	int handled = 0;
-	u8 irq_id;
-	u8 irqs = MEN_Z135_ALL_IRQS;
+	bool handled = false;
+	int irq_id;
 
 	uart->stat_reg = ioread32(port->membase + MEN_Z135_STAT_REG);
 	irq_id = IRQ_ID(uart->stat_reg);
-
-	/* After ISR activate all IRQ's except the TX IRQ
-	 * Only if TX IRQ was set and there are still more data to send
-	 */
-	irqs = (MEN_Z135_IER_RXCIEN | MEN_Z135_IER_RLSIEN | MEN_Z135_IER_MSIEN);
 
 	if (!irq_id)
 		goto out;
@@ -406,34 +406,26 @@ static irqreturn_t men_z135_intr(int irq, void *data)
 	/* It's save to write to IIR[7:6] RXC[9:8] */
 	iowrite8(irq_id, port->membase + MEN_Z135_STAT_REG);
 
-	/* Disable all interrupts */
-	iowrite8(0, port->membase + MEN_Z135_CONF_REG);
-
 	if (irq_id & MEN_Z135_IRQ_ID_RLS) {
 		men_z135_handle_lsr(uart);
-		handled = 1;
+		handled = true;
 	}
 	if (irq_id & (MEN_Z135_IRQ_ID_RDA | MEN_Z135_IRQ_ID_CTI)) {
 		if (irq_id & MEN_Z135_IRQ_ID_CTI)
-			dev_dbg(&uart->pdev->dev, "Character Timeout Indication\n");
+			dev_dbg(uart->port.dev, "Character Timeout Indication\n");
 		men_z135_handle_rx(uart);
-		handled = 1;
+		handled = true;
 	}
 
 	if (irq_id & MEN_Z135_IRQ_ID_TSA) {
-		bool more;
-		more = men_z135_handle_tx(uart);
-		if (more)
-			irqs |= MEN_Z135_IER_TXCIEN;
-		handled = 1;
+		men_z135_handle_tx(uart);
+		handled = true;
 	}
 
 	if (irq_id & MEN_Z135_IRQ_ID_MST) {
 		men_z135_handle_modem_status(uart);
-		handled = 1;
+		handled = true;
 	}
-
-	iowrite8(irqs, port->membase + MEN_Z135_CONF_REG);
 
 	spin_unlock(&port->lock);
 out:
@@ -500,23 +492,27 @@ static void men_z135_set_mctrl(struct uart_port *port, unsigned int mctrl)
 	if (mctrl & TIOCM_RTS)
 		conf_reg |= MEN_Z135_MCR_RTS;
 	else
-		conf_reg &= ~ MEN_Z135_MCR_RTS;
+		conf_reg &= ~MEN_Z135_MCR_RTS;
+
 	if (mctrl & TIOCM_DTR)
 		conf_reg |= MEN_Z135_MCR_DTR;
 	else
-		conf_reg &= ~ MEN_Z135_MCR_DTR;
+		conf_reg &= ~MEN_Z135_MCR_DTR;
+
 	if (mctrl & TIOCM_OUT1)
 		conf_reg |= MEN_Z135_MCR_OUT1;
 	else
-		conf_reg &= ~ MEN_Z135_MCR_OUT1;
+		conf_reg &= ~MEN_Z135_MCR_OUT1;
+
 	if (mctrl & TIOCM_OUT2)
 		conf_reg |= MEN_Z135_MCR_OUT2;
 	else
-		conf_reg &= ~ MEN_Z135_MCR_OUT2;
+		conf_reg &= ~MEN_Z135_MCR_OUT2;
+
 	if (mctrl & TIOCM_LOOP)
 		conf_reg |= MEN_Z135_MCR_LOOP;
 	else
-		conf_reg &= ~ MEN_Z135_MCR_LOOP;
+		conf_reg &= ~MEN_Z135_MCR_LOOP;
 
 	if (conf_reg != old)
 		iowrite32(conf_reg, port->membase + MEN_Z135_CONF_REG);
@@ -585,14 +581,11 @@ static void men_z135_disable_ms(struct uart_port *port)
 static void men_z135_start_tx(struct uart_port *port)
 {
 	struct men_z135_port *uart = to_men_z135(port);
-	bool more;
 
 	if (uart->automode)
 		men_z135_disable_ms(port);
 
-	more = men_z135_handle_tx(uart);
-	if (more)
-		men_z135_reg_set(uart, MEN_Z135_CONF_REG, MEN_Z135_IER_TXCIEN);
+	men_z135_handle_tx(uart);
 }
 
 /**
@@ -633,6 +626,7 @@ static int men_z135_startup(struct uart_port *port)
 
 	conf_reg = ioread32(port->membase + MEN_Z135_CONF_REG);
 
+	/* Activate all but TX space available IRQ */
 	conf_reg |= MEN_Z135_ALL_IRQS & ~MEN_Z135_IER_TXCIEN;
 	conf_reg &= ~(0xff << 16);
 	conf_reg |= (txlvl << 16);
@@ -652,6 +646,7 @@ static void men_z135_shutdown(struct uart_port *port)
 	u32 conf_reg = 0;
 
 	conf_reg |= MEN_Z135_ALL_IRQS;
+
 	men_z135_reg_clr(uart, MEN_Z135_CONF_REG, conf_reg);
 
 	free_irq(uart->port.irq, uart);
@@ -713,6 +708,7 @@ static void men_z135_set_termios(struct uart_port *port,
 	}
 
 	termios->c_cflag &= ~CMSPAR; /* Mark/Space parity is not supported */
+
 	conf_reg |= lcr << MEN_Z135_LCR_SHIFT;
 	iowrite32(conf_reg, port->membase + MEN_Z135_CONF_REG);
 
@@ -764,7 +760,7 @@ static int men_z135_request_port(struct uart_port *port)
 
 static void men_z135_config_port(struct uart_port *port, int type)
 {
-	port->type = 29;	/* XXX: Use correct port type */
+	port->type = PORT_MEN_Z135;
 	men_z135_request_port(port);
 }
 
@@ -774,7 +770,7 @@ static int men_z135_verify_port(struct uart_port *port,
 	return -EINVAL;
 }
 
-static struct uart_ops men_z135_ops = {
+static const struct uart_ops men_z135_ops = {
 	.tx_empty = men_z135_tx_empty,
 	.set_mctrl = men_z135_set_mctrl,
 	.get_mctrl = men_z135_get_mctrl,
@@ -835,7 +831,7 @@ static int men_z135_probe(CHAMELEON_UNIT_T *chu)
 	uart->port.flags = UPF_BOOT_AUTOCONF | UPF_IOREMAP;
 	uart->port.line = line++;
 	uart->port.dev = dev;
-	uart->port.type = 29;
+	uart->port.type = PORT_MEN_Z135;
 	uart->pdev = chu->pdev;
 	uart->chu = chu;
 	uart->port.mapbase = (phys_addr_t) chu->phys;
@@ -844,13 +840,16 @@ static int men_z135_probe(CHAMELEON_UNIT_T *chu)
 	spin_lock_init(&uart->lock);
 
 	err = uart_add_one_port(&men_z135_driver, &uart->port);
-	if (err) {
-		dev_err(dev, "Failed to add UART: %d\n", err);
-		return err;
-	}
+	if (err)
+		goto err;
 
 	return 0;
 
+err:
+	free_page((unsigned long) uart->rxbuf);
+	dev_err(dev, "Failed to add UART: %d\n", err);
+
+	return err;
 }
 
 /**
@@ -865,7 +864,7 @@ static int men_z135_remove(CHAMELEON_UNIT_T *chu)
 	uart = chu->driver_data;
 	uart_remove_one_port(&men_z135_driver, &uart->port);
 	free_page((unsigned long)uart->rxbuf);
-	return 0;
+   return 0;
 }
 
 static u16 mod_code_arr[] = { 0x87,
