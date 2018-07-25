@@ -21,6 +21,11 @@
 
 #include <MEN/men_chameleon.h>
 
+#ifndef PORT_MEN_Z135
+/* MEN 16z135 UART */
+#define PORT_MEN_Z135	107
+#endif
+
 #define MEN_Z135_MAX_PORTS		12
 #define MEN_Z135_BASECLK		29491200
 #define MEN_Z135_FIFO_SIZE		1024
