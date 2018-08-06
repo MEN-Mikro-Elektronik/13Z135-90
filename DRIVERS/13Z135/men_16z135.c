@@ -107,20 +107,25 @@ static int line;
 
 static int txlvl = 5;
 module_param(txlvl, int, S_IRUGO);
-MODULE_PARM_DESC(txlvl, "TX IRQ trigger level 0-7, default 5 (128 byte)");
+MODULE_PARM_DESC(txlvl, " TX IRQ trigger level 0-7, default 5 (128 byte)");
 
 static int rxlvl = 6;
 module_param(rxlvl, int, S_IRUGO);
-MODULE_PARM_DESC(rxlvl, "RX IRQ trigger level 0-7, default 6 (256 byte)");
+MODULE_PARM_DESC(rxlvl, " RX IRQ trigger level 0-7, default 6 (256 byte)");
 
 static int align;
 module_param(align, int, S_IRUGO);
-MODULE_PARM_DESC(align, "Keep hardware FIFO write pointer aligned, default 0");
+MODULE_PARM_DESC(align, " Keep hardware FIFO write pointer aligned, default 0");
 
 static uint rx_timeout;
 module_param(rx_timeout, uint, S_IRUGO);
-MODULE_PARM_DESC(rx_timeout, "RX timeout. "
+MODULE_PARM_DESC(rx_timeout, " RX timeout. "
 		"Timeout in seconds = (timeout_reg * baud_reg * 4) / freq_reg");
+
+static int force_halfduplex = 0;
+module_param(force_halfduplex, int, S_IRUGO);
+MODULE_PARM_DESC(force_halfduplex, " Any value not equal to 0 will force "
+		"the High Speed UART to disable receiving during transmission");
 
 struct men_z135_port {
 	struct uart_port port;
@@ -225,16 +230,14 @@ static void men_z135_handle_lsr(struct men_z135_port *uart)
  */
 static u16 get_rx_fifo_content(struct men_z135_port *uart)
 {
-	struct uart_port *port = &uart->port;
 	u32 stat_reg;
 	u16 rxc;
 	u8 rxc_lo;
 	u8 rxc_hi;
 
-	stat_reg = ioread32(port->membase + MEN_Z135_STAT_REG);
+	stat_reg = uart->stat_reg;
 	rxc_lo = stat_reg >> 24;
 	rxc_hi = (stat_reg & 0xC0) >> 6;
-
 	rxc = rxc_lo | (rxc_hi << 8);
 
 	return rxc;
@@ -302,7 +305,14 @@ static void men_z135_handle_tx(struct men_z135_port *uart)
 	struct circ_buf *xmit = &port->state->xmit;
 	u32 txc;
 	u32 wptr;
+	u32 conf_reg;
+	u32 stat_reg;
+	u32 rxc_lo;
+	u32 rxc_hi;
+	u32 rxc;
+	u32 lsr;
 	int qlen;
+	int uart_stat_loc;
 	int n;
 	int txfree;
 	int head;
@@ -310,18 +320,18 @@ static void men_z135_handle_tx(struct men_z135_port *uart)
 	int s;
 
 	if (uart_circ_empty(xmit))
-		goto out;
+		goto out_and_enable_rx;
 
 	if (uart_tx_stopped(port))
-		goto out;
+		goto out_and_enable_rx;
 
 	if (port->x_char)
-		goto out;
+		goto out_and_enable_rx;
 
 	/* calculate bytes to copy */
 	qlen = uart_circ_chars_pending(xmit);
 	if (qlen <= 0)
-		goto out;
+		goto out_and_enable_rx;
 
 	wptr = ioread32(port->membase + MEN_Z135_TX_CTRL);
 	txc = (wptr >> 16) & 0x3ff;
@@ -369,14 +379,48 @@ static void men_z135_handle_tx(struct men_z135_port *uart)
 		uart_write_wakeup(port);
 
 irq_en:
-	if (!uart_circ_empty(xmit))
+	if (!uart_circ_empty(xmit)) {
 		men_z135_reg_set(uart, MEN_Z135_CONF_REG, MEN_Z135_IER_TXCIEN);
-	else
+	} else {
 		men_z135_reg_clr(uart, MEN_Z135_CONF_REG, MEN_Z135_IER_TXCIEN);
-
-out:
+		goto out_and_enable_rx;
+	}
 	return;
 
+out_and_enable_rx:
+	if (force_halfduplex) {
+		uart_stat_loc = ioread32(port->membase + MEN_Z135_STAT_REG);
+		lsr = (uart_stat_loc >> 16) & 0xff;
+		if (   lsr & MEN_Z135_LSR_THEP
+		    && lsr & MEN_Z135_LSR_TEXP) {
+			men_z135_reg_clr(uart, MEN_Z135_CONF_REG, MEN_Z135_IER_TXCIEN);
+
+			/* Reject all received data during transmission */
+			stat_reg = ioread32(port->membase + MEN_Z135_STAT_REG);
+			rxc_lo = stat_reg >> 24;
+			rxc_hi = (stat_reg & 0xC0) >> 6;
+			rxc = rxc_lo | (rxc_hi << 8);
+			iowrite32(rxc, port->membase + MEN_Z135_RX_CTRL);
+
+			/* Reset tx level */
+			conf_reg = ioread32(port->membase + MEN_Z135_CONF_REG);
+			conf_reg &= ~(0x0f << 16);
+			conf_reg |= (txlvl << 16);
+			iowrite32(conf_reg, port->membase + MEN_Z135_CONF_REG);
+
+			men_z135_reg_set(uart, MEN_Z135_CONF_REG, MEN_Z135_IER_RXCIEN);
+		} else {
+			conf_reg = ioread32(port->membase + MEN_Z135_CONF_REG);
+
+			/* Change TX level to get an interrupt when the fifo is empty */
+			conf_reg &= ~(0x0f << 16);
+			iowrite32(conf_reg, port->membase + MEN_Z135_CONF_REG);
+
+			/* Enable tx interrupt */
+			men_z135_reg_set(uart, MEN_Z135_CONF_REG, MEN_Z135_IER_TXCIEN);
+		}
+	}
+	return;
 }
 
 /**
@@ -585,6 +629,8 @@ static void men_z135_start_tx(struct uart_port *port)
 	if (uart->automode)
 		men_z135_disable_ms(port);
 
+	if (force_halfduplex)
+		men_z135_reg_clr(uart, MEN_Z135_CONF_REG, MEN_Z135_IER_RXCIEN);
 	men_z135_handle_tx(uart);
 }
 
@@ -921,4 +967,5 @@ module_exit(men_z135_exit);
 
 MODULE_AUTHOR("Johannes Thumshirn <johannes.thumshirn@men.de>");
 MODULE_LICENSE("GPL v2");
+MODULE_VERSION("BOSCH PROKIST patched version from original 13Z135-90_01_01");
 MODULE_DESCRIPTION("MEN 16z135 High Speed UART");
