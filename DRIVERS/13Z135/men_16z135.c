@@ -839,7 +839,7 @@ static int men_z135_probe(CHAMELEON_UNIT_T *chu)
 	uart->port.type = PORT_MEN_Z135;
 	uart->pdev = chu->pdev;
 	uart->chu = chu;
-	uart->port.mapbase = (phys_addr_t) chu->phys;
+	uart->port.mapbase = (phys_addr_t)(uintptr_t) chu->phys;
 	uart->port.membase = NULL;
 
 	spin_lock_init(&uart->lock);
