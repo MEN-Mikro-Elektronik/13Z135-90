@@ -133,54 +133,11 @@ struct men_z135_port {
 	CHAMELEON_UNIT_T *chu;
 	unsigned char *rxbuf;
 	u32 stat_reg;
+	u32 conf_reg;
 	spinlock_t lock;
 	bool automode;
 };
 #define to_men_z135(port) container_of((port), struct men_z135_port, port)
-
-/**
- * men_z135_reg_set() - Set value in register
- * @uart: The UART port
- * @addr: Register address
- * @val: value to set
- */
-static inline void men_z135_reg_set(struct men_z135_port *uart,
-				u32 addr, u32 val)
-{
-	struct uart_port *port = &uart->port;
-	unsigned long flags;
-	u32 reg;
-
-	spin_lock_irqsave(&uart->lock, flags);
-
-	reg = ioread32(port->membase + addr);
-	reg |= val;
-	iowrite32(reg, port->membase + addr);
-
-	spin_unlock_irqrestore(&uart->lock, flags);
-}
-
-/**
- * men_z135_reg_clr() - Unset value in register
- * @uart: The UART port
- * @addr: Register address
- * @val: value to clear
- */
-static void men_z135_reg_clr(struct men_z135_port *uart,
-				u32 addr, u32 val)
-{
-	struct uart_port *port = &uart->port;
-	unsigned long flags;
-	u32 reg;
-
-	spin_lock_irqsave(&uart->lock, flags);
-
-	reg = ioread32(port->membase + addr);
-	reg &= ~val;
-	iowrite32(reg, port->membase + addr);
-
-	spin_unlock_irqrestore(&uart->lock, flags);
-}
 
 /**
  * men_z135_handle_modem_status() - Handle change of modem status
@@ -305,7 +262,6 @@ static void men_z135_handle_tx(struct men_z135_port *uart)
 	struct circ_buf *xmit = &port->state->xmit;
 	u32 txc;
 	u32 wptr;
-	u32 conf_reg;
 	u32 stat_reg;
 	u32 rxc_lo;
 	u32 rxc_hi;
@@ -380,9 +336,11 @@ static void men_z135_handle_tx(struct men_z135_port *uart)
 
 irq_en:
 	if (!uart_circ_empty(xmit)) {
-		men_z135_reg_set(uart, MEN_Z135_CONF_REG, MEN_Z135_IER_TXCIEN);
+		uart->conf_reg |= MEN_Z135_IER_TXCIEN;
+		iowrite32(uart->conf_reg, port->membase + MEN_Z135_CONF_REG);
 	} else {
-		men_z135_reg_clr(uart, MEN_Z135_CONF_REG, MEN_Z135_IER_TXCIEN);
+		uart->conf_reg &= ~MEN_Z135_IER_TXCIEN;
+		iowrite32(uart->conf_reg, port->membase + MEN_Z135_CONF_REG);
 		goto out_and_enable_rx;
 	}
 	return;
@@ -393,7 +351,8 @@ out_and_enable_rx:
 		lsr = (uart_stat_loc >> 16) & 0xff;
 		if (   lsr & MEN_Z135_LSR_THEP
 		    && lsr & MEN_Z135_LSR_TEXP) {
-			men_z135_reg_clr(uart, MEN_Z135_CONF_REG, MEN_Z135_IER_TXCIEN);
+			uart->conf_reg &= ~MEN_Z135_IER_TXCIEN;
+			iowrite32(uart->conf_reg, port->membase + MEN_Z135_CONF_REG);
 
 			/* Reject all received data during transmission */
 			stat_reg = ioread32(port->membase + MEN_Z135_STAT_REG);
@@ -403,21 +362,20 @@ out_and_enable_rx:
 			iowrite32(rxc, port->membase + MEN_Z135_RX_CTRL);
 
 			/* Reset tx level */
-			conf_reg = ioread32(port->membase + MEN_Z135_CONF_REG);
-			conf_reg &= ~(0x0f << 16);
-			conf_reg |= (txlvl << 16);
-			iowrite32(conf_reg, port->membase + MEN_Z135_CONF_REG);
+			uart->conf_reg = ioread32(port->membase + MEN_Z135_CONF_REG);
+			uart->conf_reg &= ~(0x0f << 16);
+			uart->conf_reg |= (txlvl << 16);
 
-			men_z135_reg_set(uart, MEN_Z135_CONF_REG, MEN_Z135_IER_RXCIEN);
+			uart->conf_reg |= MEN_Z135_IER_RXCIEN;
+			iowrite32(uart->conf_reg, port->membase + MEN_Z135_CONF_REG);
 		} else {
-			conf_reg = ioread32(port->membase + MEN_Z135_CONF_REG);
 
 			/* Change TX level to get an interrupt when the fifo is empty */
-			conf_reg &= ~(0x0f << 16);
-			iowrite32(conf_reg, port->membase + MEN_Z135_CONF_REG);
+			uart->conf_reg &= ~(0x0f << 16);
 
 			/* Enable tx interrupt */
-			men_z135_reg_set(uart, MEN_Z135_CONF_REG, MEN_Z135_IER_TXCIEN);
+			uart->conf_reg |= MEN_Z135_IER_TXCIEN;
+			iowrite32(uart->conf_reg, port->membase + MEN_Z135_CONF_REG);
 		}
 	}
 	return;
@@ -447,9 +405,11 @@ static irqreturn_t men_z135_intr(int irq, void *data)
 		goto out;
 
 	spin_lock(&port->lock);
-	/* It's save to write to IIR[7:6] RXC[9:8] */
-	iowrite8(irq_id, port->membase + MEN_Z135_STAT_REG);
 
+	/* Clear all interrupt enables */
+	iowrite8(0, port->membase + MEN_Z135_CONF_REG);
+
+	/* Handle IRQ */
 	if (irq_id & MEN_Z135_IRQ_ID_RLS) {
 		men_z135_handle_lsr(uart);
 		handled = true;
@@ -470,6 +430,9 @@ static irqreturn_t men_z135_intr(int irq, void *data)
 		men_z135_handle_modem_status(uart);
 		handled = true;
 	}
+
+	/* Restore interrupt enables */
+	iowrite32(uart->conf_reg, port->membase + MEN_Z135_CONF_REG);
 
 	spin_unlock(&port->lock);
 out:
@@ -529,37 +492,37 @@ static unsigned int men_z135_tx_empty(struct uart_port *port)
  */
 static void men_z135_set_mctrl(struct uart_port *port, unsigned int mctrl)
 {
+	struct men_z135_port *uart = to_men_z135(port);
 	u32 old;
-	u32 conf_reg;
 
-	conf_reg = old = ioread32(port->membase + MEN_Z135_CONF_REG);
+	old = uart->conf_reg;
 	if (mctrl & TIOCM_RTS)
-		conf_reg |= MEN_Z135_MCR_RTS;
+		uart->conf_reg |= MEN_Z135_MCR_RTS;
 	else
-		conf_reg &= ~MEN_Z135_MCR_RTS;
+		uart->conf_reg &= ~MEN_Z135_MCR_RTS;
 
 	if (mctrl & TIOCM_DTR)
-		conf_reg |= MEN_Z135_MCR_DTR;
+		uart->conf_reg |= MEN_Z135_MCR_DTR;
 	else
-		conf_reg &= ~MEN_Z135_MCR_DTR;
+		uart->conf_reg &= ~MEN_Z135_MCR_DTR;
 
 	if (mctrl & TIOCM_OUT1)
-		conf_reg |= MEN_Z135_MCR_OUT1;
+		uart->conf_reg |= MEN_Z135_MCR_OUT1;
 	else
-		conf_reg &= ~MEN_Z135_MCR_OUT1;
+		uart->conf_reg &= ~MEN_Z135_MCR_OUT1;
 
 	if (mctrl & TIOCM_OUT2)
-		conf_reg |= MEN_Z135_MCR_OUT2;
+		uart->conf_reg |= MEN_Z135_MCR_OUT2;
 	else
-		conf_reg &= ~MEN_Z135_MCR_OUT2;
+		uart->conf_reg &= ~MEN_Z135_MCR_OUT2;
 
 	if (mctrl & TIOCM_LOOP)
-		conf_reg |= MEN_Z135_MCR_LOOP;
+		uart->conf_reg |= MEN_Z135_MCR_LOOP;
 	else
-		conf_reg &= ~MEN_Z135_MCR_LOOP;
+		uart->conf_reg &= ~MEN_Z135_MCR_LOOP;
 
-	if (conf_reg != old)
-		iowrite32(conf_reg, port->membase + MEN_Z135_CONF_REG);
+	if (uart->conf_reg != old)
+		iowrite32(uart->conf_reg, port->membase + MEN_Z135_CONF_REG);
 }
 
 /**
@@ -599,7 +562,8 @@ static void men_z135_stop_tx(struct uart_port *port)
 {
 	struct men_z135_port *uart = to_men_z135(port);
 
-	men_z135_reg_clr(uart, MEN_Z135_CONF_REG, MEN_Z135_IER_TXCIEN);
+	uart->conf_reg &= ~(MEN_Z135_IER_TXCIEN);
+	iowrite32(uart->conf_reg, port->membase + MEN_Z135_CONF_REG);
 }
 
 /*
@@ -612,7 +576,8 @@ static void men_z135_disable_ms(struct uart_port *port)
 {
 	struct men_z135_port *uart = to_men_z135(port);
 
-	men_z135_reg_clr(uart, MEN_Z135_CONF_REG, MEN_Z135_IER_MSIEN);
+	uart->conf_reg &= ~(MEN_Z135_IER_MSIEN);
+	iowrite32(uart->conf_reg, port->membase + MEN_Z135_CONF_REG);
 }
 
 /**
@@ -629,8 +594,10 @@ static void men_z135_start_tx(struct uart_port *port)
 	if (uart->automode)
 		men_z135_disable_ms(port);
 
-	if (force_halfduplex)
-		men_z135_reg_clr(uart, MEN_Z135_CONF_REG, MEN_Z135_IER_RXCIEN);
+	if (force_halfduplex) {
+		uart->conf_reg &= ~(MEN_Z135_IER_RXCIEN);
+		iowrite32(uart->conf_reg, port->membase + MEN_Z135_CONF_REG);
+	}
 	men_z135_handle_tx(uart);
 }
 
@@ -644,7 +611,8 @@ static void men_z135_stop_rx(struct uart_port *port)
 {
 	struct men_z135_port *uart = to_men_z135(port);
 
-	men_z135_reg_clr(uart, MEN_Z135_CONF_REG, MEN_Z135_IER_RXCIEN);
+	uart->conf_reg &= ~(MEN_Z135_IER_RXCIEN);
+	iowrite32(uart->conf_reg, port->membase + MEN_Z135_CONF_REG);
 }
 
 /**
@@ -657,28 +625,26 @@ static void men_z135_enable_ms(struct uart_port *port)
 {
 	struct men_z135_port *uart = to_men_z135(port);
 
-	men_z135_reg_set(uart, MEN_Z135_CONF_REG, MEN_Z135_IER_MSIEN);
+	uart->conf_reg |= MEN_Z135_IER_MSIEN;
+	iowrite32(uart->conf_reg, port->membase + MEN_Z135_CONF_REG);
 }
 
 static int men_z135_startup(struct uart_port *port)
 {
 	struct men_z135_port *uart = to_men_z135(port);
 	int err;
-	u32 conf_reg = 0;
 
 	err = men_z135_request_irq(uart);
 	if (err)
 		return -ENODEV;
 
-	conf_reg = ioread32(port->membase + MEN_Z135_CONF_REG);
-
 	/* Activate all but TX space available IRQ */
-	conf_reg |= MEN_Z135_ALL_IRQS & ~MEN_Z135_IER_TXCIEN;
-	conf_reg &= ~(0xff << 16);
-	conf_reg |= (txlvl << 16);
-	conf_reg |= (rxlvl << 20);
+	uart->conf_reg |= MEN_Z135_ALL_IRQS & ~MEN_Z135_IER_TXCIEN;
+	uart->conf_reg &= ~(0xff << 16);
+	uart->conf_reg |= (txlvl << 16);
+	uart->conf_reg |= (rxlvl << 20);
 
-	iowrite32(conf_reg, port->membase + MEN_Z135_CONF_REG);
+	iowrite32(uart->conf_reg, port->membase + MEN_Z135_CONF_REG);
 
 	if (rx_timeout)
 		iowrite32(rx_timeout, port->membase + MEN_Z135_TIMEOUT);
@@ -689,11 +655,9 @@ static int men_z135_startup(struct uart_port *port)
 static void men_z135_shutdown(struct uart_port *port)
 {
 	struct men_z135_port *uart = to_men_z135(port);
-	u32 conf_reg = 0;
 
-	conf_reg |= MEN_Z135_ALL_IRQS;
-
-	men_z135_reg_clr(uart, MEN_Z135_CONF_REG, conf_reg);
+	uart->conf_reg &= ~(MEN_Z135_ALL_IRQS);
+	iowrite32(uart->conf_reg, port->membase + MEN_Z135_CONF_REG);
 
 	free_irq(uart->port.irq, uart);
 }
@@ -704,13 +668,11 @@ static void men_z135_set_termios(struct uart_port *port,
 {
 	struct men_z135_port *uart = to_men_z135(port);
 	unsigned int baud;
-	u32 conf_reg;
 	u32 bd_reg;
 	u32 uart_freq;
 	u8 lcr;
 
-	conf_reg = ioread32(port->membase + MEN_Z135_CONF_REG);
-	lcr = LCR(conf_reg);
+	lcr = LCR(uart->conf_reg);
 
 	/* byte size */
 	switch (termios->c_cflag & CSIZE) {
@@ -743,20 +705,20 @@ static void men_z135_set_termios(struct uart_port *port,
 	} else
 		lcr |= MEN_Z135_PAR_DIS << MEN_Z135_PEN_SHIFT;
 
-	conf_reg |= MEN_Z135_IER_MSIEN;
+	uart->conf_reg |= MEN_Z135_IER_MSIEN;
 	if (termios->c_cflag & CRTSCTS) {
-		conf_reg |= MEN_Z135_MCR_RCFC;
+		uart->conf_reg |= MEN_Z135_MCR_RCFC;
 		uart->automode = true;
 		termios->c_cflag &= ~CLOCAL;
 	} else {
-		conf_reg &= ~MEN_Z135_MCR_RCFC;
+		uart->conf_reg &= ~MEN_Z135_MCR_RCFC;
 		uart->automode = false;
 	}
 
 	termios->c_cflag &= ~CMSPAR; /* Mark/Space parity is not supported */
 
-	conf_reg |= lcr << MEN_Z135_LCR_SHIFT;
-	iowrite32(conf_reg, port->membase + MEN_Z135_CONF_REG);
+	uart->conf_reg |= lcr << MEN_Z135_LCR_SHIFT;
+	iowrite32(uart->conf_reg, port->membase + MEN_Z135_CONF_REG);
 
 	uart_freq = ioread32(port->membase + MEN_Z135_UART_FREQ);
 	if (uart_freq == 0)
@@ -967,5 +929,5 @@ module_exit(men_z135_exit);
 
 MODULE_AUTHOR("Johannes Thumshirn <johannes.thumshirn@men.de>");
 MODULE_LICENSE("GPL v2");
-MODULE_VERSION("BOSCH PROKIST patched version from original 13Z135-90_01_01");
-MODULE_DESCRIPTION("MEN 16z135 High Speed UART");
+MODULE_VERSION("v1.1 (BOSCH PROKIST version)");
+MODULE_DESCRIPTION("MEN 16z135 High Speed UART BOSCH PROKIST patched version with MSI support original from 13Z135-90_01_01");
