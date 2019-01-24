@@ -275,13 +275,9 @@ static void men_z135_handle_tx(struct men_z135_port *uart)
 	int tail;
 	int s;
 
-	if (uart_circ_empty(xmit))
-		goto out_and_enable_rx;
-
-	if (uart_tx_stopped(port))
-		goto out_and_enable_rx;
-
-	if (port->x_char)
+	if (   uart_circ_empty(xmit)
+	    || uart_tx_stopped(port)
+	    || port->x_char)
 		goto out_and_enable_rx;
 
 	/* calculate bytes to copy */
@@ -351,8 +347,6 @@ out_and_enable_rx:
 		lsr = (uart_stat_loc >> 16) & 0xff;
 		if (   lsr & MEN_Z135_LSR_THEP
 		    && lsr & MEN_Z135_LSR_TEXP) {
-			uart->conf_reg &= ~MEN_Z135_IER_TXCIEN;
-			iowrite32(uart->conf_reg, port->membase + MEN_Z135_CONF_REG);
 
 			/* Reject all received data during transmission */
 			stat_reg = ioread32(port->membase + MEN_Z135_STAT_REG);
@@ -361,17 +355,18 @@ out_and_enable_rx:
 			rxc = rxc_lo | (rxc_hi << 8);
 			iowrite32(rxc, port->membase + MEN_Z135_RX_CTRL);
 
-			/* Reset tx level */
-			uart->conf_reg = ioread32(port->membase + MEN_Z135_CONF_REG);
-			uart->conf_reg &= ~(0x0f << 16);
+			/* Reset TX level */
+			uart->conf_reg &= ~(0x0fUL << 16);
 			uart->conf_reg |= (txlvl << 16);
 
+			/* Disable TX interrupt and enable RX interrupt */
 			uart->conf_reg |= MEN_Z135_IER_RXCIEN;
+			uart->conf_reg &= ~MEN_Z135_IER_TXCIEN;
 			iowrite32(uart->conf_reg, port->membase + MEN_Z135_CONF_REG);
 		} else {
 
-			/* Change TX level to get an interrupt when the fifo is empty */
-			uart->conf_reg &= ~(0x0f << 16);
+			/* Change TX level to get an interrupt only when the fifo is empty */
+			uart->conf_reg &= ~(0x0fUL << 16);
 
 			/* Enable tx interrupt */
 			uart->conf_reg |= MEN_Z135_IER_TXCIEN;
@@ -407,6 +402,10 @@ static irqreturn_t men_z135_intr(int irq, void *data)
 	spin_lock(&port->lock);
 
 	/* Clear all interrupt enables */
+	/* NOTE: Do not remove the enable signals from the
+	 * shadow register conf_reg to be able to restore old
+	 * config
+	 */
 	iowrite8(0, port->membase + MEN_Z135_CONF_REG);
 
 	/* Handle IRQ */
@@ -414,6 +413,7 @@ static irqreturn_t men_z135_intr(int irq, void *data)
 		men_z135_handle_lsr(uart);
 		handled = true;
 	}
+
 	if (irq_id & (MEN_Z135_IRQ_ID_RDA | MEN_Z135_IRQ_ID_CTI)) {
 		if (irq_id & MEN_Z135_IRQ_ID_CTI)
 			dev_dbg(uart->port.dev, "Character Timeout Indication\n");
@@ -929,5 +929,5 @@ module_exit(men_z135_exit);
 
 MODULE_AUTHOR("Johannes Thumshirn <johannes.thumshirn@men.de>");
 MODULE_LICENSE("GPL v2");
-MODULE_VERSION("v1.1 (BOSCH PROKIST version)");
+MODULE_VERSION("v1.2 (BOSCH PROKIST version)");
 MODULE_DESCRIPTION("MEN 16z135 High Speed UART BOSCH PROKIST patched version with MSI support original from 13Z135-90_01_01");
