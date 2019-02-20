@@ -10,6 +10,8 @@
  */
 #define pr_fmt(fmt) KBUILD_MODNAME ":" fmt
 
+/* #define DEBUG */
+
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/interrupt.h>
@@ -132,6 +134,7 @@ struct men_z135_port {
 	struct pci_dev *pdev;
 	CHAMELEON_UNIT_T *chu;
 	unsigned char *rxbuf;
+	int wait_for_tx_empty;
 	u32 stat_reg;
 	u32 conf_reg;
 	spinlock_t lock;
@@ -167,7 +170,13 @@ static void men_z135_handle_lsr(struct men_z135_port *uart)
 
 	lsr = (uart->stat_reg >> 16) & 0xff;
 
-	if (lsr & MEN_Z135_LSR_OE)
+	if (   (lsr & MEN_Z135_LSR_OE)
+	    && (   (force_halfduplex != 0 && (uart->conf_reg & MEN_Z135_IER_RXCIEN))
+	        || (force_halfduplex == 0) )  )
+		/* Do only increment overrun counter 
+		   if RX interrupt is enabled when halfduplex mode
+		   is active. Because in halfduplex mode all received data
+		   become rejected anyway when RX interrupt is disabled */
 		port->icount.overrun++;
 	if (lsr & MEN_Z135_LSR_PE)
 		port->icount.parity++;
@@ -228,8 +237,8 @@ static void men_z135_handle_rx(struct men_z135_port *uart)
 	room = tty_buffer_request_room(tport, size);
 	if (room != size)
 		dev_dbg(uart->port.dev,
-			"Not enough room in flip buffer, truncating to %d\n",
-			room);
+			"Not enough room in flip buffer, truncating to %d phyadr: 0x%x", 
+			uart->port.mapbase, room);
 
 	if (room == 0)
 		return;
@@ -260,30 +269,22 @@ static void men_z135_handle_tx(struct men_z135_port *uart)
 {
 	struct uart_port *port = &uart->port;
 	struct circ_buf *xmit = &port->state->xmit;
-	u32 txc;
-	u32 wptr;
-	u32 stat_reg;
-	u32 rxc_lo;
-	u32 rxc_hi;
-	u32 rxc;
-	u32 lsr;
+	unsigned long flags;
+	u32 wptr, stat_reg, rxc_lo, rxc_hi;
+	u32 txc, rxc, lsr;
 	int qlen;
-	int uart_stat_loc;
-	int n;
 	int txfree;
-	int head;
-	int tail;
-	int s;
+	int head, tail, s, n;
 
 	if (   uart_circ_empty(xmit)
 	    || uart_tx_stopped(port)
 	    || port->x_char)
-		goto out_and_enable_rx;
+		goto handle_tx_empty;
 
 	/* calculate bytes to copy */
 	qlen = uart_circ_chars_pending(xmit);
 	if (qlen <= 0)
-		goto out_and_enable_rx;
+		goto handle_tx_empty;
 
 	wptr = ioread32(port->membase + MEN_Z135_TX_CTRL);
 	txc = (wptr >> 16) & 0x3ff;
@@ -297,7 +298,7 @@ static void men_z135_handle_tx(struct men_z135_port *uart)
 		dev_dbg(uart->port.dev,
 			"Not enough room in TX FIFO have %d, need %d\n",
 			txfree, qlen);
-		goto irq_en;
+		goto tx_irq_en;
 	}
 
 	/* if we're not aligned, it's better to copy only 1 or 2 bytes and
@@ -311,7 +312,7 @@ static void men_z135_handle_tx(struct men_z135_port *uart)
 		n = qlen;
 
 	if (n <= 0)
-		goto irq_en;
+		goto tx_irq_en;
 
 	head = xmit->head & (UART_XMIT_SIZE - 1);
 	tail = xmit->tail & (UART_XMIT_SIZE - 1);
@@ -323,57 +324,90 @@ static void men_z135_handle_tx(struct men_z135_port *uart)
 	xmit->tail = (xmit->tail + n) & (UART_XMIT_SIZE - 1);
 	mmiowb();
 
-	iowrite32(n & 0x3ff, port->membase + MEN_Z135_TX_CTRL);
+	if (force_halfduplex) {
+		/* Disable RX interrupt */
+		uart->conf_reg &= ~MEN_Z135_IER_RXCIEN;
+		dev_dbg(uart->port.dev, "Disable RX phy_adr 0x%x", uart->port.mapbase);
+		iowrite32(uart->conf_reg, port->membase + MEN_Z135_CONF_REG);
+
+		/* Send data */
+		iowrite32(n & 0x3ff, port->membase + MEN_Z135_TX_CTRL);
+
+		/* 
+		 * Change TX level to get an interrupt only when the fifo is empty 
+		 * to avoid unlimite interrupts during waiting for TX fifo empty
+		 * but this also means it is not possible to use full band width
+		 * in force_halfduplex mode
+		 */
+		uart->conf_reg &= ~(0x0fUL << 16);
+
+		/* Enable TX interrupt to reenable RX interrupt */
+		uart->conf_reg |= MEN_Z135_IER_TXCIEN;
+		dev_dbg(uart->port.dev, "Enable TX phy_adr 0x%x", uart->port.mapbase);
+		iowrite32(uart->conf_reg, port->membase + MEN_Z135_CONF_REG);
+
+		uart->wait_for_tx_empty = 1;
+	} else {
+		iowrite32(n & 0x3ff, port->membase + MEN_Z135_TX_CTRL);
+	}
 
 	port->icount.tx += n;
 
 	if (uart_circ_chars_pending(xmit) < WAKEUP_CHARS)
 		uart_write_wakeup(port);
 
-irq_en:
+	/* Data could be sent but check if data still pending */
 	if (!uart_circ_empty(xmit)) {
+		/* Data pending */
 		uart->conf_reg |= MEN_Z135_IER_TXCIEN;
+		dev_dbg(uart->port.dev, "Enable TX phy_adr 0x%x", uart->port.mapbase);
 		iowrite32(uart->conf_reg, port->membase + MEN_Z135_CONF_REG);
-	} else {
+	} else if (!force_halfduplex) {
 		uart->conf_reg &= ~MEN_Z135_IER_TXCIEN;
+		dev_dbg(uart->port.dev, "Disable TX phy_adr 0x%x", uart->port.mapbase);
 		iowrite32(uart->conf_reg, port->membase + MEN_Z135_CONF_REG);
-		goto out_and_enable_rx;
 	}
 	return;
 
-out_and_enable_rx:
-	if (force_halfduplex) {
-		uart_stat_loc = ioread32(port->membase + MEN_Z135_STAT_REG);
-		lsr = (uart_stat_loc >> 16) & 0xff;
+tx_irq_en:
+	uart->conf_reg |= MEN_Z135_IER_TXCIEN;
+	dev_dbg(uart->port.dev, "Enable TX phy_adr 0x%x", uart->port.mapbase);
+	iowrite32(uart->conf_reg, port->membase + MEN_Z135_CONF_REG);
+	return;
+
+handle_tx_empty:
+	if (force_halfduplex && uart->wait_for_tx_empty) {
+		/* Update status register */
+		uart->stat_reg = ioread32(port->membase + MEN_Z135_STAT_REG);
+		/* The read access is clearing all error flags, therefore
+		   the new read status need to be handled */
+		men_z135_handle_lsr(uart);
+
+		stat_reg = uart->stat_reg;
+		lsr = (stat_reg >> 16) & 0xff;
 		if (   lsr & MEN_Z135_LSR_THEP
 		    && lsr & MEN_Z135_LSR_TEXP) {
 
 			/* Reject all received data during transmission */
-			stat_reg = ioread32(port->membase + MEN_Z135_STAT_REG);
 			rxc_lo = stat_reg >> 24;
 			rxc_hi = (stat_reg & 0xC0) >> 6;
 			rxc = rxc_lo | (rxc_hi << 8);
-			iowrite32(rxc, port->membase + MEN_Z135_RX_CTRL);
+			if(rxc) 
+				iowrite32(rxc, port->membase + MEN_Z135_RX_CTRL);
 
 			/* Reset TX level */
 			uart->conf_reg &= ~(0x0fUL << 16);
 			uart->conf_reg |= (txlvl << 16);
 
 			/* Disable TX interrupt and enable RX interrupt */
-			uart->conf_reg |= MEN_Z135_IER_RXCIEN;
 			uart->conf_reg &= ~MEN_Z135_IER_TXCIEN;
+			uart->conf_reg |= MEN_Z135_IER_RXCIEN;
+			dev_dbg(uart->port.dev, "Enable RX phy_adr 0x%x", uart->port.mapbase);
+			dev_dbg(uart->port.dev, "Disable TX phy_adr 0x%x", uart->port.mapbase);
 			iowrite32(uart->conf_reg, port->membase + MEN_Z135_CONF_REG);
-		} else {
-
-			/* Change TX level to get an interrupt only when the fifo is empty */
-			uart->conf_reg &= ~(0x0fUL << 16);
-
-			/* Enable tx interrupt */
-			uart->conf_reg |= MEN_Z135_IER_TXCIEN;
-			iowrite32(uart->conf_reg, port->membase + MEN_Z135_CONF_REG);
+			uart->wait_for_tx_empty = 0;
 		}
 	}
-	return;
 }
 
 /**
@@ -416,7 +450,7 @@ static irqreturn_t men_z135_intr(int irq, void *data)
 
 	if (irq_id & (MEN_Z135_IRQ_ID_RDA | MEN_Z135_IRQ_ID_CTI)) {
 		if (irq_id & MEN_Z135_IRQ_ID_CTI)
-			dev_dbg(uart->port.dev, "Character Timeout Indication\n");
+			dev_dbg(uart->port.dev, "Character Timeout Indication phyadr: 0x%x", uart->port.mapbase);
 		men_z135_handle_rx(uart);
 		handled = true;
 	}
@@ -493,9 +527,7 @@ static unsigned int men_z135_tx_empty(struct uart_port *port)
 static void men_z135_set_mctrl(struct uart_port *port, unsigned int mctrl)
 {
 	struct men_z135_port *uart = to_men_z135(port);
-	u32 old;
 
-	old = uart->conf_reg;
 	if (mctrl & TIOCM_RTS)
 		uart->conf_reg |= MEN_Z135_MCR_RTS;
 	else
@@ -521,8 +553,7 @@ static void men_z135_set_mctrl(struct uart_port *port, unsigned int mctrl)
 	else
 		uart->conf_reg &= ~MEN_Z135_MCR_LOOP;
 
-	if (uart->conf_reg != old)
-		iowrite32(uart->conf_reg, port->membase + MEN_Z135_CONF_REG);
+	iowrite32(uart->conf_reg, port->membase + MEN_Z135_CONF_REG);
 }
 
 /**
@@ -563,6 +594,7 @@ static void men_z135_stop_tx(struct uart_port *port)
 	struct men_z135_port *uart = to_men_z135(port);
 
 	uart->conf_reg &= ~(MEN_Z135_IER_TXCIEN);
+	dev_dbg(uart->port.dev, "Disable TX phy_adr 0x%x", uart->port.mapbase);
 	iowrite32(uart->conf_reg, port->membase + MEN_Z135_CONF_REG);
 }
 
@@ -593,11 +625,6 @@ static void men_z135_start_tx(struct uart_port *port)
 
 	if (uart->automode)
 		men_z135_disable_ms(port);
-
-	if (force_halfduplex) {
-		uart->conf_reg &= ~(MEN_Z135_IER_RXCIEN);
-		iowrite32(uart->conf_reg, port->membase + MEN_Z135_CONF_REG);
-	}
 	men_z135_handle_tx(uart);
 }
 
@@ -644,6 +671,8 @@ static int men_z135_startup(struct uart_port *port)
 	uart->conf_reg |= (txlvl << 16);
 	uart->conf_reg |= (rxlvl << 20);
 
+	dev_dbg(uart->port.dev, "Enable RX phy_adr 0x%x", uart->port.mapbase);
+	dev_dbg(uart->port.dev, "Disable TX phy_adr 0x%x", uart->port.mapbase);
 	iowrite32(uart->conf_reg, port->membase + MEN_Z135_CONF_REG);
 
 	if (rx_timeout)
@@ -842,6 +871,7 @@ static int men_z135_probe(CHAMELEON_UNIT_T *chu)
 	uart->port.type = PORT_MEN_Z135;
 	uart->pdev = chu->pdev;
 	uart->chu = chu;
+	uart->wait_for_tx_empty = 0;
 	uart->port.mapbase = (phys_addr_t) chu->phys;
 	uart->port.membase = NULL;
 
@@ -850,6 +880,9 @@ static int men_z135_probe(CHAMELEON_UNIT_T *chu)
 	err = uart_add_one_port(&men_z135_driver, &uart->port);
 	if (err)
 		goto err;
+
+	if (force_halfduplex)
+		dev_info(dev, "Force halfduplex is enabled\n");
 
 	return 0;
 
@@ -929,5 +962,5 @@ module_exit(men_z135_exit);
 
 MODULE_AUTHOR("Johannes Thumshirn <johannes.thumshirn@men.de>");
 MODULE_LICENSE("GPL v2");
-MODULE_VERSION("v1.2 (BOSCH PROKIST version)");
+MODULE_VERSION("v1.3 (BOSCH PROKIST version)");
 MODULE_DESCRIPTION("MEN 16z135 High Speed UART BOSCH PROKIST patched version with MSI support original from 13Z135-90_01_01");
