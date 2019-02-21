@@ -1,7 +1,7 @@
 /*
  * MEN 16z135 High Speed UART
  *
- * Copyright (C) 2014 MEN Mikroelektronik GmbH (www.men.de)
+ * Copyright (c) 2014-2019, MEN Mikro Elektronik GmbH
  * Author: Johannes Thumshirn <johannes.thumshirn@men.de>
  *
  * This program is free software; you can redistribute it and/or modify it
