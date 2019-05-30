@@ -4,7 +4,7 @@
 	<description>Native serial driver for MEN 16Z135 FPGA highspeed UART</description>
 	<date>2016-03-09</date>
 	<revision>1.0</revision>
-    <docroot>DRIVERS/13Z025/DOC/html/index.html</docroot>
+	<docroot>DRIVERS/13Z025/DOC/html/index.html</docroot>
 	<modellist>
 		<model>
 			<hwname>16Z135_UART</hwname>
@@ -12,9 +12,9 @@
 			<devnameprefix>UART</devnameprefix>
 			<devtype>NATIVE</devtype>
 			<busif>ChameleonBus</busif>
-            <autoid>
-                <chamunitid>0x87</chamunitid>
-            </autoid>
+			<autoid>
+				<chamunitid>0x87</chamunitid>
+			</autoid>
 			<settinglist>
 				<debugsetting desc="false" drv="false" mk="false" oss="false"/>
 			</settinglist>
@@ -24,14 +24,14 @@
 					<description>driver for 16Z135</description>
 					<type>Native Driver</type>
 					<makefilepath>DRIVERS/13Z135/driver.mak</makefilepath>
-                    		<os>Linux</os>
+					<os>Linux</os>
 				</swmodule>
 				<swmodule>
 					<name>men_lx_chameleon</name>
 					<description>Linux native chameleon driver</description>
 					<type>Native Driver</type>
 					<makefilepath>DRIVERS/CHAMELEON/driver.mak</makefilepath>
-                    		<os>Linux</os>
+					<os>Linux</os>
 				</swmodule>
 			</swmodulelist>
 		</model>
