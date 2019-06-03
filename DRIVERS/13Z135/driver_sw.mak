@@ -1,8 +1,6 @@
 #**************************  M a k e f i l e ********************************
 #  
 #         Author: ts
-#          $Date: 2007/04/13 13:40:23 $
-#      $Revision: 1.1 $
 #  
 #    Description: makefile descriptor for swapped 16Z025 Module
 #                      
@@ -23,10 +21,15 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 MAK_NAME=lx_z135_sw
+# the next line is updated during the MDIS installation
+STAMPED_REVISION="13Z135-90_01_03-2-gc316c21-dirty_2019-05-30"
+
+DEF_REVISION=MAK_REVISION=$(STAMPED_REVISION)
 
 MAK_LIBS=
 
 MAK_SWITCH=$(SW_PREFIX)MAC_MEM_MAPPED \
+		$(SW_PREFIX)$(DEF_REVISION) \
 	   $(SW_PREFIX)MAC_BYTESWAP
 
 MAK_INCL=$(MEN_INC_DIR)/../../NATIVE/MEN/men_chameleon.h 

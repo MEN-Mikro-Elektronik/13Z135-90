@@ -1,8 +1,6 @@
 #**************************  M a k e f i l e ********************************
 #  
 #         Author: ub
-#          $Date: 2004/11/29 11:34:21 $
-#      $Revision: 1.1 $
 #  
 #    Description: makefile descriptor for chameleon Linux kernel module
 #                      
@@ -23,6 +21,11 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 MAK_NAME=lx_z135
+# the next line is updated during the MDIS installation
+STAMPED_REVISION="13Z135-90_01_03-2-gc316c21-dirty_2019-05-30"
+
+DEF_REVISION=MAK_REVISION=$(STAMPED_REVISION)
+MAK_SWITCH=$(SW_PREFIX)$(DEF_REVISION)
 
 MAK_LIBS=
 
