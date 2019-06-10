@@ -2,8 +2,8 @@
 <package xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="packagedesc.xsd">
 	<name>13z13590</name>
 	<description>Native serial driver for MEN 16Z135 FPGA highspeed UART</description>
-	<date>2016-03-09</date>
-	<revision>1.0</revision>
+	<date>2019-06-07</date>
+	<revision>13Z135-90_01_03-4-g6590c8b</revision>
 	<docroot>DRIVERS/13Z025/DOC/html/index.html</docroot>
 	<modellist>
 		<model>
