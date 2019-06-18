@@ -927,3 +927,4 @@ module_exit(men_z135_exit);
 MODULE_AUTHOR("Johannes Thumshirn <johannes.thumshirn@men.de>");
 MODULE_LICENSE("GPL v2");
 MODULE_DESCRIPTION("MEN 16z135 High Speed UART");
+MODULE_VERSION(MENT_XSTR(MAK_REVISION));
