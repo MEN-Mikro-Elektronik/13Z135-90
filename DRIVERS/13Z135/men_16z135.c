@@ -377,7 +377,8 @@ static void men_z135_handle_tx(struct men_z135_port *uart)
 
 	memcpy_toio(port->membase + MEN_Z135_TX_RAM, &xmit->buf[xmit->tail], n);
 	xmit->tail = (xmit->tail + n) & (UART_XMIT_SIZE - 1);
-	#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,2,0)
+	#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,2,0) || \
+	    (defined(RHEL_RELEASE_VERSION) && RHEL_RELEASE_CODE >= RHEL_RELEASE_VERSION(8,2))
 		#ifdef mmiowb
 			mmiowb();
 		#endif
