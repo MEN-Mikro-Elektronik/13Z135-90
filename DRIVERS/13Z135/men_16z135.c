@@ -3,7 +3,7 @@
  * Author: Johannes Thumshirn <johannes.thumshirn@men.de>
  *
  *---------------------------------------------------------------------------
- * Copyright 2014-2019, MEN Mikro Elektronik GmbH
+ * Copyright 2014-2020, MEN Mikro Elektronik GmbH
  ****************************************************************************/
 /*
 * This program is free software: you can redistribute it and/or modify
