@@ -3,7 +3,7 @@
  * Author: Johannes Thumshirn <johannes.thumshirn@men.de>
  *
  *---------------------------------------------------------------------------
- * Copyright 2014-2019, MEN Mikro Elektronik GmbH
+ * Copyright 2014-2020, MEN Mikro Elektronik GmbH
  ****************************************************************************/
 /*
 * This program is free software: you can redistribute it and/or modify
@@ -380,6 +380,12 @@ static void men_z135_handle_tx(struct men_z135_port *uart)
 	#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,2,0)
 		#ifdef mmiowb
 			mmiowb();
+		#endif
+	#elif defined(RHEL_RELEASE_VERSION)
+		#if RHEL_RELEASE_CODE >= RHEL_RELEASE_VERSION(8,2)
+			#ifdef mmiowb
+				mmiowb();
+			#endif
 		#endif
 	#else
 		mmiowb();
