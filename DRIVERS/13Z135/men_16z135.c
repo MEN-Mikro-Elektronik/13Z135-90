@@ -682,9 +682,15 @@ static void men_z135_shutdown(struct uart_port *port)
 	free_irq(uart->port.irq, uart);
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,1,0)
 static void men_z135_set_termios(struct uart_port *port,
-				struct ktermios *termios,
-				struct ktermios *old)
+				 struct ktermios *termios,
+				 const struct ktermios *old)
+#else
+static void men_z135_set_termios(struct uart_port *port,
+				 struct ktermios *termios,
+				 struct ktermios *old)
+#endif
 {
 	struct men_z135_port *uart = to_men_z135(port);
 	unsigned int baud;
